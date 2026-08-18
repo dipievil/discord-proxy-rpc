@@ -1,0 +1,66 @@
+# discord-proxy-rpc — Example Configuration
+# Copy this file to config.yaml and adjust values for your environment.
+# All options can be overridden via environment variables with PROXY_ prefix
+# (e.g. PROXY_DISCORD_CLIENT_ID, PROXY_SERVER_PORT, etc.)
+
+discord:
+  # REQUIRED — Your Discord Application Client ID.
+  # Create one at https://discord.com/developers/applications
+  client_id: ""
+
+  # Automatically reconnect to Discord IPC if the connection drops.
+  auto_reconnect: true
+
+  # Base interval between reconnection attempts (Go duration format).
+  reconnect_base_interval: 5s
+
+  # Maximum interval between reconnection attempts (Go duration format).
+  # The proxy uses exponential backoff capped at this value.
+  max_reconnect_interval: 60s
+
+server:
+  # Address the WebSocket server listens on.
+  # Use "127.0.0.1" to restrict to localhost only.
+  host: "0.0.0.0"
+
+  # Port the WebSocket server listens on.
+  port: 8765
+
+  # WebSocket endpoint path that LAN clients connect to.
+  ws_path: "/ws"
+
+  # Maximum time to read a message from a client (Go duration format).
+  read_timeout: 10s
+
+  # Maximum time to write a response to a client (Go duration format).
+  write_timeout: 10s
+
+auth:
+  # Enable token-based authentication for incoming WebSocket clients.
+  # When enabled, clients must send the token as the first message.
+  enabled: false
+
+  # Shared secret token clients must present to authenticate.
+  # SECURITY: Use the PROXY_AUTH_TOKEN env var instead of setting this in YAML.
+  # Never commit real tokens to version control.
+  token: ""
+
+mdns:
+  # Advertise this proxy on the local network via mDNS/DNS-SD.
+  # Clients can auto-discover the proxy without manual host configuration.
+  enabled: true
+
+  # mDNS service instance name. Empty string defaults to the system hostname.
+  instance_name: ""
+
+  # DNS-SD service type. Should not need to be changed.
+  service_type: "_discord-proxy._tcp"
+
+logging:
+  # Log verbosity level. Accepted values: debug, info, warn, error.
+  level: "info"
+
+  # Log output format.
+  # "json"    — structured JSON (default, recommended for production)
+  # "console" — human-readable colored output (recommended for development)
+  format: "json"
