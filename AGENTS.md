@@ -9,6 +9,7 @@ This is Rich Presence agent that send activities to a running Discord on your LA
 - If any task resolution is different than the initial spec, update the spec files on `docs/implementation` folder and add a comment to it's card
 - Implementation files are on `docs/implementation` folder. If user ask for different approach than specified, update these files.
 - If user provide any new information about the project, not related to a specific task, add to history
+- NEVER commit sensitive information to the repository. Warn user for any sensitive information that is about to be commited and pushed to remote repository
 
 ## Development rules
 
