@@ -240,7 +240,7 @@ discord-proxy-rpc/
 ```go
 module github.com/seu-usuario/discord-proxy-rpc
 
-go 1.23
+go 1.26
 
 require (
     github.com/dragsbruh/gopresence v0.0.0-20260104...
@@ -279,7 +279,7 @@ make build-all
 ### Docker
 
 ```dockerfile
-FROM golang:1.23-alpine AS builder
+FROM golang:1.26-alpine AS builder
 WORKDIR /src
 COPY . .
 RUN go build -o /out/discord-proxy ./cmd/proxy
