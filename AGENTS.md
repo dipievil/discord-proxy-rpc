@@ -14,10 +14,13 @@ This is Rich Presence agent that send activities to a running Discord on your LA
 ## Development rules
 
 - Follow best practices on development
-- Prefer SOLID principles and clean code
+- Prefer *SOLID* principles and *clean code*
 - Avoid code comments, unless necessary for clarification and functional documentation
-- Use Context7 MCP for updated technology information
+- Use `Context7` MCP for updated technology information
 - Immediately test local changes on a development environment before pushing to production
+- Use *_env* file for sensitive information and never commit it to the repository
+- Always add unit tests for new features and bug fixes
+- Update any tests that are affected by new features or bug fixes
 
 ## Tasks management
 
@@ -39,6 +42,11 @@ This is Rich Presence agent that send activities to a running Discord on your LA
     - Continue working with no tracking
   - If no card is avaiable, move the top 5 cards from `backlog` to `to-do` list
   - For different approaches than specified on the story, add a comment to it on Trello
+- A story is considered finished when:
+  - All tasks are completed
+  - All tests are passing
+  - Code is commited and pushed to remote repository
+  - A pull request is created and merged
 - Once a story is finished:
   - move its card to `Done`
   - check if a blocked story can be unblocked. If so, move the card on `Blocked` to `To-do`
@@ -47,4 +55,6 @@ This is Rich Presence agent that send activities to a running Discord on your LA
 
 - Use conventional commits message format
 - Use semantic versioning for releases
-- Always ask user if a finished task should be commited and pushed to remote yrepositor
+- Always ask user if a finished task should be commited and pushed to remote repository
+- Always work on a new branch for each task. Branch name should be the story number and name, e.g. `1.1-setup-project`
+- Create a pull request for each finished task. PR title should be the story number and name, e.g. `1.1-setup-project`. PR description should contain the story description and the changes made to implement it.
