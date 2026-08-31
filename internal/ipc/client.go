@@ -165,6 +165,17 @@ func (c *Client) Run(ctx context.Context) error {
 	events := c.events
 	defer close(events)
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		<-ctx.Done()
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.ipcConn != nil {
+			_ = c.ipcConn.Close()
+		}
+	}()
+
 	for {
 		op, data, err := conn.Read()
 		if err != nil {
@@ -172,14 +183,14 @@ func (c *Client) Run(ctx context.Context) error {
 				return ctx.Err()
 			}
 			c.setState(StateDisconnected)
-			c.emitTerminalEvent(ctx, events, Event{Opcode: op, Err: err})
+			c.emitTerminalEvent(events, Event{Opcode: op, Err: err})
 			return err
 		}
 
 		switch op {
 		case OpClose:
 			c.setState(StateDisconnected)
-			c.emitTerminalEvent(ctx, events, Event{Opcode: op, Err: errors.New("ipc connection closed by Discord")})
+			c.emitTerminalEvent(events, Event{Opcode: op, Err: errors.New("ipc connection closed by Discord")})
 			return nil
 		case OpFrame:
 			frame, parseErr := presence.ParseFrame(data)
@@ -246,9 +257,10 @@ func (c *Client) emitEvent(_ context.Context, events chan<- Event, evt Event) {
 	}
 }
 
-func (c *Client) emitTerminalEvent(ctx context.Context, events chan<- Event, evt Event) {
+func (c *Client) emitTerminalEvent(events chan<- Event, evt Event) {
 	select {
 	case events <- evt:
-	case <-ctx.Done():
+	default:
+		c.logger.Warn("ipc terminal event dropped: subscriber too slow", zap.Int32("opcode", evt.Opcode))
 	}
 }
