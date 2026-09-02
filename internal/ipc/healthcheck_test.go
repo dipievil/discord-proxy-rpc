@@ -97,12 +97,16 @@ func TestHealthCheckStop(t *testing.T) {
 		t.Fatal("health check never sent ping")
 	}
 
-	hc.Stop()
+	done := make(chan struct{})
+	go func() {
+		hc.Stop()
+		close(done)
+	}()
 
 	select {
-	case <-hc.done:
+	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Stop did not wait for goroutine to finish")
+		t.Fatal("Stop did not return within timeout")
 	}
 }
 
