@@ -50,10 +50,7 @@ func TestBackoffJitter(t *testing.T) {
 		rm.attempt = attempt
 		rm.mu.Unlock()
 
-		base := rm.baseInterval << uint(attempt)
-		if base > rm.maxInterval {
-			base = rm.maxInterval
-		}
+		base := cappedDouble(rm.baseInterval, rm.maxInterval, attempt)
 
 		for range 200 {
 			interval := rm.NextInterval()
@@ -318,5 +315,80 @@ func TestNextIntervalRespectsMaxCap(t *testing.T) {
 		if interval > rm.maxInterval*11/10 {
 			t.Errorf("attempt %d: interval %v exceeds max %v", attempt, interval, rm.maxInterval)
 		}
+	}
+}
+
+func TestBackoffDoesNotOverflowAtLargeAttempts(t *testing.T) {
+	rm := &ReconnectManager{
+		baseInterval: 5 * time.Second,
+		maxInterval:  60 * time.Second,
+	}
+
+	for attempt := 0; attempt <= 2*maxReconnectAttempts; attempt++ {
+		rm.mu.Lock()
+		rm.attempt = attempt
+		rm.mu.Unlock()
+
+		interval := rm.NextInterval()
+		if interval <= 0 {
+			t.Fatalf("attempt %d: interval %v must be positive (overflow)", attempt, interval)
+		}
+		maxAllowed := rm.maxInterval * 11 / 10
+		if interval > maxAllowed {
+			t.Errorf("attempt %d: interval %v exceeds max+10%% %v", attempt, interval, maxAllowed)
+		}
+	}
+}
+
+func TestCappedDouble(t *testing.T) {
+	cases := []struct {
+		name   string
+		base   time.Duration
+		cap    time.Duration
+		times  int
+		want   time.Duration
+	}{
+		{"zero times", 5 * time.Second, 60 * time.Second, 0, 5 * time.Second},
+		{"below cap", 5 * time.Second, 60 * time.Second, 2, 20 * time.Second},
+		{"capped", 5 * time.Second, 60 * time.Second, 4, 60 * time.Second},
+		{"base beyond cap", 100 * time.Second, 60 * time.Second, 3, 60 * time.Second},
+		{"large times", 1 * time.Nanosecond, 60 * time.Second, 1000, 60 * time.Second},
+		{"zero cap", 5 * time.Second, 0, 3, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cappedDouble(tc.base, tc.cap, tc.times); got != tc.want {
+				t.Errorf("cappedDouble(%v, %v, %d) = %v, want %v", tc.base, tc.cap, tc.times, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunWithReconnectStopsOnCancelWhileIdle(t *testing.T) {
+	m := newMockDiscord(t)
+	c := newTestClient(t, m)
+
+	cfg := config.DiscordConfig{
+		AutoReconnect:         true,
+		ReconnectBaseInterval: 5 * time.Second,
+		MaxReconnectInterval:  10 * time.Second,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.RunWithReconnect(ctx, cfg) }()
+
+	waitAccept(t, m)
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected error from cancelled context")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunWithReconnect did not stop on cancel while session idle")
 	}
 }

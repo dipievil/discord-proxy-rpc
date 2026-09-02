@@ -44,13 +44,23 @@ func (rm *ReconnectManager) NextInterval() time.Duration {
 	attempt := rm.attempt
 	rm.mu.Unlock()
 
-	interval := rm.baseInterval << uint(attempt)
-	if interval > rm.maxInterval {
-		interval = rm.maxInterval
-	}
+	interval := cappedDouble(rm.baseInterval, rm.maxInterval, attempt)
 
 	jitter := float64(interval) * 0.1
 	return time.Duration(float64(interval) + rand.Float64()*2*jitter - jitter)
+}
+
+// cappedDouble returns value * 2^times, saturating at cap. Doubling stops as
+// soon as the cap is reached, so the result can never overflow time.Duration
+// even for large shift counts.
+func cappedDouble(value, cap time.Duration, times int) time.Duration {
+	for i := 0; i < times && value < cap; i++ {
+		value *= 2
+	}
+	if value > cap {
+		return cap
+	}
+	return value
 }
 
 func (rm *ReconnectManager) Reset() {
@@ -145,7 +155,7 @@ func (c *Client) RunWithReconnect(ctx context.Context, cfg config.DiscordConfig)
 	rm := NewReconnectManager(c, cfg, c.logger)
 
 	for {
-		runErr := c.Run(ctx)
+		runErr := runInterruptible(ctx, c)
 		if ctx.Err() != nil {
 			rm.Stop()
 			return ctx.Err()
@@ -160,5 +170,21 @@ func (c *Client) RunWithReconnect(ctx context.Context, cfg config.DiscordConfig)
 		if err := rm.Reconnect(ctx); err != nil {
 			return err
 		}
+	}
+}
+
+// runInterruptible runs c.Run until it returns or ctx is cancelled. A blocked
+// Read call is unblocked by closing the connection, so cancellation returns
+// promptly even while the IPC session is idle.
+func runInterruptible(ctx context.Context, c *Client) error {
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		_ = c.Close()
+		return ctx.Err()
 	}
 }
