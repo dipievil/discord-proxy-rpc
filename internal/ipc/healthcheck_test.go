@@ -111,7 +111,7 @@ func TestHealthCheckPongBeforePing(t *testing.T) {
 	c := newTestClient(t, m)
 
 	hc := NewHealthCheckManager(c, config.DiscordConfig{
-		HealthCheckInterval: 5 * time.Second,
+		HealthCheckInterval: 100 * time.Millisecond,
 		HealthCheckTimeout:  5 * time.Second,
 	}, zap.NewNop())
 	hc.Start(context.Background())
@@ -120,8 +120,17 @@ func TestHealthCheckPongBeforePing(t *testing.T) {
 	hc.HandlePong()
 	hc.HandlePong()
 
-	if len(hc.pongCh) != 1 {
-		t.Errorf("pongCh len = %d, want 1 (second pong should be dropped)", len(hc.pongCh))
+	select {
+	case f := <-m.recv:
+		if f.opcode != OpPing {
+			t.Errorf("opcode = %d, want %d", f.opcode, OpPing)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("health check never sent ping")
+	}
+
+	if c.State() != StateConnected {
+		t.Errorf("state = %v, want connected (pre-mature PONGs should not cause issues)", c.State())
 	}
 }
 

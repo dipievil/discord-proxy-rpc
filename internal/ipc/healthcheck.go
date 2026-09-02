@@ -77,6 +77,11 @@ func (h *HealthCheckManager) HandlePong() {
 }
 
 func (h *HealthCheckManager) run(ctx context.Context) {
+	h.mu.Lock()
+	stopCh := h.stopCh
+	pongCh := h.pongCh
+	h.mu.Unlock()
+
 	defer close(h.done)
 
 	ticker := time.NewTicker(h.interval)
@@ -86,7 +91,7 @@ func (h *HealthCheckManager) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-h.stopCh:
+		case <-stopCh:
 			return
 		case <-ticker.C:
 		}
@@ -101,9 +106,9 @@ func (h *HealthCheckManager) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-h.stopCh:
+		case <-stopCh:
 			return
-		case <-h.pongCh:
+		case <-pongCh:
 			h.logger.Debug("health check pong received")
 		case <-time.After(h.timeout):
 			h.logger.Error("health check timed out: no pong received within timeout",
