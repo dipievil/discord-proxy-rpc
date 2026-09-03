@@ -51,6 +51,7 @@ func (p *Presence) Start(ctx context.Context) {
 	p.stopCh = make(chan struct{})
 	p.done = make(chan struct{})
 	p.stopped = false
+	p.lastNotified = types.Activity{}
 	p.mu.Unlock()
 	go p.run(ctx)
 }
@@ -82,11 +83,10 @@ func (p *Presence) Update(activity types.Activity) {
 	p.gen++
 	gen := p.gen
 
-	if p.timer == nil || !p.timer.Stop() {
-		p.timer = time.AfterFunc(p.interval, func() { p.flush(gen) })
-	} else {
-		p.timer.Reset(p.interval)
+	if p.timer != nil {
+		p.timer.Stop()
 	}
+	p.timer = time.AfterFunc(p.interval, func() { p.flush(gen) })
 }
 
 func (p *Presence) Current() types.Activity {
