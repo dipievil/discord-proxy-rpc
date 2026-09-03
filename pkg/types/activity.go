@@ -80,6 +80,69 @@ func (a Activity) Clone() Activity {
 	return out
 }
 
+func (a Activity) Equals(other Activity) bool {
+	if a.Details != other.Details || a.State != other.State || a.Type != other.Type {
+		return false
+	}
+	if !timestampsEqual(a.Timestamps, other.Timestamps) {
+		return false
+	}
+	if !assetsEqual(a.Assets, other.Assets) {
+		return false
+	}
+	if !partyEqual(a.Party, other.Party) {
+		return false
+	}
+	if len(a.Buttons) != len(other.Buttons) {
+		return false
+	}
+	for i := range a.Buttons {
+		if a.Buttons[i].Label != other.Buttons[i].Label || a.Buttons[i].URL != other.Buttons[i].URL {
+			return false
+		}
+	}
+	return true
+}
+
+func timestampsEqual(a, b *Timestamps) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil {
+		return b.Start == 0 && b.End == 0
+	}
+	if b == nil {
+		return a.Start == 0 && a.End == 0
+	}
+	return a.Start == b.Start && a.End == b.End
+}
+
+func assetsEqual(a, b *Assets) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil {
+		return b.LargeImage == "" && b.LargeText == "" && b.SmallImage == "" && b.SmallText == ""
+	}
+	if b == nil {
+		return a.LargeImage == "" && a.LargeText == "" && a.SmallImage == "" && a.SmallText == ""
+	}
+	return *a == *b
+}
+
+func partyEqual(a, b *Party) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil {
+		return b.ID == "" && b.Size == [2]int{}
+	}
+	if b == nil {
+		return a.ID == "" && a.Size == [2]int{}
+	}
+	return a.ID == b.ID && a.Size == b.Size
+}
+
 func (a *Activity) MarshalJSON() ([]byte, error) {
 	type alias Activity
 	if a.Buttons != nil && len(a.Buttons) == 0 {
