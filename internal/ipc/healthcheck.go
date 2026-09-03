@@ -88,9 +88,10 @@ func (h *HealthCheckManager) run(ctx context.Context) {
 	h.mu.Lock()
 	stopCh := h.stopCh
 	pongCh := h.pongCh
+	done := h.done
 	h.mu.Unlock()
 
-	defer close(h.done)
+	defer close(done)
 
 	ticker := time.NewTicker(h.interval)
 	defer ticker.Stop()
