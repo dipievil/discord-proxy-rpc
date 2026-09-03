@@ -50,16 +50,24 @@ func (h *HealthCheckManager) Start(ctx context.Context) {
 
 func (h *HealthCheckManager) Stop() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	if h.stopCh != nil {
 		close(h.stopCh)
 		h.stopCh = nil
 	}
-	if h.done != nil {
-		<-h.done
-		h.done = nil
+	done := h.done
+	h.done = nil
+	h.mu.Unlock()
+
+	if done != nil {
+		<-done
 	}
+}
+
+func (h *HealthCheckManager) Done() <-chan struct{} {
+	h.mu.Lock()
+	done := h.done
+	h.mu.Unlock()
+	return done
 }
 
 func (h *HealthCheckManager) HandlePong() {
@@ -87,6 +95,11 @@ func (h *HealthCheckManager) run(ctx context.Context) {
 	ticker := time.NewTicker(h.interval)
 	defer ticker.Stop()
 
+	timeoutTimer := time.NewTimer(h.timeout)
+	if !timeoutTimer.Stop() {
+		<-timeoutTimer.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -96,6 +109,11 @@ func (h *HealthCheckManager) run(ctx context.Context) {
 		case <-ticker.C:
 		}
 
+		select {
+		case <-pongCh:
+		default:
+		}
+
 		if err := h.client.SendRaw(OpPing, nil); err != nil {
 			h.logger.Debug("health check ping failed", zap.Error(err))
 			return
@@ -103,14 +121,34 @@ func (h *HealthCheckManager) run(ctx context.Context) {
 
 		h.logger.Debug("health check ping sent")
 
+		timeoutTimer.Reset(h.timeout)
+
 		select {
 		case <-ctx.Done():
+			if !timeoutTimer.Stop() {
+				select {
+				case <-timeoutTimer.C:
+				default:
+				}
+			}
 			return
 		case <-stopCh:
+			if !timeoutTimer.Stop() {
+				select {
+				case <-timeoutTimer.C:
+				default:
+				}
+			}
 			return
 		case <-pongCh:
+			if !timeoutTimer.Stop() {
+				select {
+				case <-timeoutTimer.C:
+				default:
+				}
+			}
 			h.logger.Debug("health check pong received")
-		case <-time.After(h.timeout):
+		case <-timeoutTimer.C:
 			h.logger.Error("health check timed out: no pong received within timeout",
 				zap.Duration("timeout", h.timeout))
 			_ = h.client.Close()

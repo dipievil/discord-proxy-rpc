@@ -154,6 +154,16 @@ func (errAutoReconnectDisabled) Error() string {
 func (c *Client) RunWithReconnect(ctx context.Context, cfg config.DiscordConfig) error {
 	rm := NewReconnectManager(c, cfg, c.logger)
 
+	if err := c.Connect(); err != nil {
+		if !cfg.AutoReconnect {
+			return err
+		}
+		c.logger.Warn("initial connection failed, attempting reconnect", zap.Error(err))
+		if err := rm.Reconnect(ctx); err != nil {
+			return err
+		}
+	}
+
 	for {
 		hc := NewHealthCheckManager(c, cfg, c.logger)
 		c.SetHealthCheck(hc)

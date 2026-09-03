@@ -159,7 +159,7 @@ func TestHealthCheckContextCancel(t *testing.T) {
 	cancel()
 
 	select {
-	case <-hc.done:
+	case <-hc.Done():
 	case <-time.After(2 * time.Second):
 		t.Fatal("context cancel did not stop health check")
 	}
