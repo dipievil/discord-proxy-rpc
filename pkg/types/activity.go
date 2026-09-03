@@ -55,6 +55,31 @@ func (a *Activity) IsEmpty() bool {
 		a.Type == ActivityPlaying
 }
 
+func (a Activity) Clone() Activity {
+	out := Activity{
+		Details: a.Details,
+		State:   a.State,
+		Type:    a.Type,
+	}
+	if a.Timestamps != nil {
+		ts := *a.Timestamps
+		out.Timestamps = &ts
+	}
+	if a.Assets != nil {
+		assets := *a.Assets
+		out.Assets = &assets
+	}
+	if a.Party != nil {
+		party := *a.Party
+		out.Party = &party
+	}
+	if a.Buttons != nil {
+		out.Buttons = make([]Button, len(a.Buttons))
+		copy(out.Buttons, a.Buttons)
+	}
+	return out
+}
+
 func (a *Activity) MarshalJSON() ([]byte, error) {
 	type alias Activity
 	if a.Buttons != nil && len(a.Buttons) == 0 {
