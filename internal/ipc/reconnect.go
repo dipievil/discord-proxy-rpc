@@ -155,7 +155,20 @@ func (c *Client) RunWithReconnect(ctx context.Context, cfg config.DiscordConfig)
 	rm := NewReconnectManager(c, cfg, c.logger)
 
 	for {
+		var hc *HealthCheckManager
+		if c.State() == StateConnected {
+			hc = NewHealthCheckManager(c, cfg, c.logger)
+			c.SetHealthCheck(hc)
+			hc.Start(ctx)
+		}
+
 		runErr := runInterruptible(ctx, c)
+
+		if hc != nil {
+			hc.Stop()
+			c.SetHealthCheck(nil)
+		}
+
 		if ctx.Err() != nil {
 			rm.Stop()
 			return ctx.Err()
