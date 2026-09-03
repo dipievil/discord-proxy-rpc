@@ -25,9 +25,14 @@ type Presence struct {
 	logger      *zap.Logger
 	stopCh      chan struct{}
 	done        chan struct{}
+	gen         uint64
+	stopped     bool
 }
 
 func NewPresence(interval time.Duration, logger *zap.Logger) *Presence {
+	if interval <= 0 {
+		interval = 50 * time.Millisecond
+	}
 	return &Presence{
 		interval: interval,
 		logger:   logger,
@@ -35,13 +40,17 @@ func NewPresence(interval time.Duration, logger *zap.Logger) *Presence {
 }
 
 func (p *Presence) Start(ctx context.Context) {
+	p.mu.Lock()
 	p.stopCh = make(chan struct{})
 	p.done = make(chan struct{})
+	p.stopped = false
+	p.mu.Unlock()
 	go p.run(ctx)
 }
 
 func (p *Presence) Stop() {
 	p.mu.Lock()
+	p.stopped = true
 	if p.stopCh != nil {
 		close(p.stopCh)
 		p.stopCh = nil
@@ -58,10 +67,16 @@ func (p *Presence) Update(activity types.Activity) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if p.stopped {
+		return
+	}
+
 	p.cached = activity
+	p.gen++
+	gen := p.gen
 
 	if p.timer == nil || !p.timer.Stop() {
-		p.timer = time.AfterFunc(p.interval, p.flush)
+		p.timer = time.AfterFunc(p.interval, func() { p.flush(gen) })
 	} else {
 		p.timer.Reset(p.interval)
 	}
@@ -70,7 +85,7 @@ func (p *Presence) Update(activity types.Activity) {
 func (p *Presence) Current() types.Activity {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.cached
+	return p.cached.Clone()
 }
 
 func (p *Presence) Subscribe(fn func(PresenceUpdate)) func() {
@@ -108,8 +123,12 @@ func (p *Presence) notify(update PresenceUpdate) {
 	}
 }
 
-func (p *Presence) flush() {
+func (p *Presence) flush(gen uint64) {
 	p.mu.Lock()
+	if gen != p.gen {
+		p.mu.Unlock()
+		return
+	}
 	update := PresenceUpdate{
 		Activity:  p.cached,
 		Timestamp: time.Now(),

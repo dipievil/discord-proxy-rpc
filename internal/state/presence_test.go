@@ -33,6 +33,18 @@ func TestNewPresence(t *testing.T) {
 	}
 }
 
+func TestNewPresenceDefaultsInterval(t *testing.T) {
+	p := NewPresence(0, zap.NewNop())
+	if p.interval != 50*time.Millisecond {
+		t.Errorf("interval = %v, want 50ms (default)", p.interval)
+	}
+
+	p2 := NewPresence(-1*time.Second, zap.NewNop())
+	if p2.interval != 50*time.Millisecond {
+		t.Errorf("interval = %v, want 50ms (default for negative)", p2.interval)
+	}
+}
+
 func TestUpdateAndCurrent(t *testing.T) {
 	p := newTestPresence(t)
 
@@ -92,23 +104,42 @@ func TestUnsubscribe(t *testing.T) {
 	p.Start(ctx)
 	defer p.Stop()
 
-	var count atomic.Int32
+	firstCh := make(chan struct{}, 1)
 	unsub := p.Subscribe(func(u PresenceUpdate) {
-		count.Add(1)
+		select {
+		case firstCh <- struct{}{}:
+		default:
+		}
 	})
 
 	p.Update(types.Activity{Details: "first"})
-	time.Sleep(150 * time.Millisecond)
-	firstCount := count.Load()
+	select {
+	case <-firstCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first notification not received")
+	}
 
 	unsub()
 
-	p.Update(types.Activity{Details: "second"})
-	time.Sleep(150 * time.Millisecond)
-	secondCount := count.Load()
+	secondNotify := make(chan struct{}, 1)
+	p.Subscribe(func(u PresenceUpdate) {
+		select {
+		case secondNotify <- struct{}{}:
+		default:
+		}
+	})
 
-	if secondCount != firstCount {
-		t.Errorf("callback fired %d times after unsubscribe, want %d", secondCount, firstCount)
+	p.Update(types.Activity{Details: "second"})
+	select {
+	case <-secondNotify:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second subscriber not notified")
+	}
+
+	select {
+	case <-firstCh:
+		t.Error("unsubscribed callback was invoked after unsubscribe")
+	default:
 	}
 }
 
@@ -120,8 +151,13 @@ func TestCoalesceBehavior(t *testing.T) {
 	defer p.Stop()
 
 	var count atomic.Int32
+	notifyCh := make(chan struct{}, 1)
 	unsub := p.Subscribe(func(u PresenceUpdate) {
 		count.Add(1)
+		select {
+		case notifyCh <- struct{}{}:
+		default:
+		}
 	})
 	defer unsub()
 
@@ -130,7 +166,13 @@ func TestCoalesceBehavior(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-notifyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("coalesced notification not received")
+	}
+
+	time.Sleep(20 * time.Millisecond)
 
 	if got := count.Load(); got != 1 {
 		t.Errorf("subscriber called %d times, want 1 (coalesced)", got)
@@ -247,7 +289,65 @@ func TestStopCleansUp(t *testing.T) {
 	cancel()
 	p.Stop()
 
-	if p.timer != nil {
+	p.mu.RLock()
+	timerNil := p.timer == nil
+	p.mu.RUnlock()
+
+	if !timerNil {
 		t.Error("timer should be nil after Stop")
+	}
+}
+
+func TestUpdateAfterStopIsNoOp(t *testing.T) {
+	p := newTestPresence(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	p.Start(ctx)
+
+	notifyCh := make(chan struct{}, 1)
+	p.Subscribe(func(u PresenceUpdate) {
+		notifyCh <- struct{}{}
+	})
+
+	p.Update(types.Activity{Details: "before stop"})
+	select {
+	case <-notifyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("notification not received before stop")
+	}
+
+	cancel()
+	p.Stop()
+
+	p.Update(types.Activity{Details: "after stop"})
+
+	select {
+	case <-notifyCh:
+		t.Error("notification received after Stop")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestStaleFlushDoesNotEmit(t *testing.T) {
+	p := newTestPresence(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+	defer p.Stop()
+
+	var count atomic.Int32
+	unsub := p.Subscribe(func(u PresenceUpdate) {
+		count.Add(1)
+	})
+	defer unsub()
+
+	for i := 0; i < 20; i++ {
+		p.Update(types.Activity{Details: "rapid", State: string(rune('A' + i%26))})
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	if got := count.Load(); got != 1 {
+		t.Errorf("subscriber called %d times, want 1 (coalesced, no duplicate from stale flush)", got)
 	}
 }

@@ -218,6 +218,78 @@ func TestActivityOmitEmptyButtons(t *testing.T) {
 	}
 }
 
+func TestActivityCloneDeepCopy(t *testing.T) {
+	original := Activity{
+		Details: "details",
+		State:   "state",
+		Timestamps: &Timestamps{
+			Start: 1234,
+			End:   5678,
+		},
+		Assets: &Assets{
+			LargeImage: "li",
+			LargeText:  "lt",
+		},
+		Party: &Party{
+			ID:   "p1",
+			Size: [2]int{2, 4},
+		},
+		Buttons: []Button{
+			{Label: "btn", URL: "http://btn"},
+		},
+		Type: ActivityStreaming,
+	}
+
+	clone := original.Clone()
+
+	assertEqual(t, clone.Details, original.Details, "Clone.Details")
+	assertEqual(t, clone.State, original.State, "Clone.State")
+	assertEqual(t, clone.Type, original.Type, "Clone.Type")
+	assertEqual(t, *clone.Timestamps, *original.Timestamps, "Clone.Timestamps")
+	assertEqual(t, *clone.Assets, *original.Assets, "Clone.Assets")
+	assertEqual(t, *clone.Party, *original.Party, "Clone.Party")
+	assertEqual(t, len(clone.Buttons), len(original.Buttons), "Clone.Buttons len")
+
+	clone.Timestamps.Start = 9999
+	clone.Assets.LargeImage = "modified"
+	clone.Party.ID = "modified"
+	clone.Buttons[0].Label = "modified"
+
+	if original.Timestamps.Start == 9999 {
+		t.Error("Clone shares Timestamps pointer")
+	}
+	if original.Assets.LargeImage == "modified" {
+		t.Error("Clone shares Assets pointer")
+	}
+	if original.Party.ID == "modified" {
+		t.Error("Clone shares Party pointer")
+	}
+	if original.Buttons[0].Label == "modified" {
+		t.Error("Clone shares Buttons slice backing array")
+	}
+}
+
+func TestActivityCloneNilPointers(t *testing.T) {
+	original := Activity{Details: "simple", Type: ActivityPlaying}
+	clone := original.Clone()
+
+	assertEqual(t, clone.Details, original.Details, "Clone.Details")
+	assertEqual(t, clone.Type, original.Type, "Clone.Type")
+
+	if clone.Timestamps != nil {
+		t.Error("Clone.Timestamps should be nil")
+	}
+	if clone.Assets != nil {
+		t.Error("Clone.Assets should be nil")
+	}
+	if clone.Party != nil {
+		t.Error("Clone.Party should be nil")
+	}
+	if clone.Buttons != nil {
+		t.Error("Clone.Buttons should be nil")
+	}
+}
+
 func assertEqual(t *testing.T, got, want interface{}, field string) {
 	t.Helper()
 	if got != want {
