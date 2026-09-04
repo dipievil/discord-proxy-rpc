@@ -30,6 +30,9 @@ func TestDefaults(t *testing.T) {
 	if cfg.Discord.MaxReconnectInterval != 60*time.Second {
 		t.Errorf("discord.max_reconnect_interval = %v, want 60s", cfg.Discord.MaxReconnectInterval)
 	}
+	if cfg.Discord.CoalesceInterval != 5*time.Second {
+		t.Errorf("discord.coalesce_interval = %v, want 5s", cfg.Discord.CoalesceInterval)
+	}
 
 	if cfg.Server.Host != "0.0.0.0" {
 		t.Errorf("server.host = %q, want %q", cfg.Server.Host, "0.0.0.0")
