@@ -78,6 +78,7 @@ func TestConfigFileLoading(t *testing.T) {
 discord:
   client_id: "123456789"
   auto_reconnect: false
+  coalesce_interval: 10s
 server:
   port: 9999
 auth:
@@ -112,6 +113,9 @@ auth:
 	if cfg.Auth.Token != "test-secret" {
 		t.Errorf("auth.token = %q, want %q", cfg.Auth.Token, "test-secret")
 	}
+	if cfg.Discord.CoalesceInterval != 10*time.Second {
+		t.Errorf("discord.coalesce_interval = %v, want 10s", cfg.Discord.CoalesceInterval)
+	}
 }
 
 func TestEnvVarOverrides(t *testing.T) {
@@ -122,7 +126,8 @@ func TestEnvVarOverrides(t *testing.T) {
 		"PROXY_AUTH_ENABLED":        "true",
 		"PROXY_LOGGING_LEVEL":       "debug",
 		"PROXY_MDNS_ENABLED":        "false",
-		"PROXY_SERVER_READ_TIMEOUT": "30s",
+		"PROXY_SERVER_READ_TIMEOUT":       "30s",
+		"PROXY_DISCORD_COALESCE_INTERVAL": "10s",
 	}
 
 	for k, v := range envVars {
@@ -157,6 +162,9 @@ func TestEnvVarOverrides(t *testing.T) {
 	}
 	if cfg.Server.ReadTimeout != 30*time.Second {
 		t.Errorf("server.read_timeout = %v, want 30s", cfg.Server.ReadTimeout)
+	}
+	if cfg.Discord.CoalesceInterval != 10*time.Second {
+		t.Errorf("discord.coalesce_interval = %v, want 10s", cfg.Discord.CoalesceInterval)
 	}
 }
 
