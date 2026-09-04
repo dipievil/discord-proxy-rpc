@@ -15,6 +15,8 @@ type PresenceUpdate struct {
 	Timestamp time.Time
 }
 
+const DefaultMaxConcurrentCallbacks = 50
+
 type Presence struct {
 	cached      types.Activity
 	mu          sync.RWMutex
@@ -27,6 +29,7 @@ type Presence struct {
 	done        chan struct{}
 	gen         uint64
 	stopped     bool
+	notifySem   chan struct{}
 }
 
 func NewPresence(interval time.Duration, logger *zap.Logger) *Presence {
@@ -34,8 +37,9 @@ func NewPresence(interval time.Duration, logger *zap.Logger) *Presence {
 		interval = 50 * time.Millisecond
 	}
 	return &Presence{
-		interval: interval,
-		logger:   logger,
+		interval:  interval,
+		logger:    logger,
+		notifySem: make(chan struct{}, DefaultMaxConcurrentCallbacks),
 	}
 }
 
@@ -112,7 +116,9 @@ func (p *Presence) notify(update PresenceUpdate) {
 	p.subMu.Unlock()
 
 	for _, fn := range subs {
+		p.notifySem <- struct{}{}
 		go func(f func(PresenceUpdate)) {
+			defer func() { <-p.notifySem }()
 			defer func() {
 				if r := recover(); r != nil {
 					p.logger.Error("subscriber panic recovered", zap.Any("recover", r))
