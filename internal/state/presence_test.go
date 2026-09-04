@@ -351,3 +351,121 @@ func TestStaleFlushDoesNotEmit(t *testing.T) {
 		t.Errorf("subscriber called %d times, want 1 (coalesced, no duplicate from stale flush)", got)
 	}
 }
+
+func Test1000ConcurrentSubscribers(t *testing.T) {
+	p := newTestPresence(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+	defer p.Stop()
+
+	const numSubs = 1000
+	var received atomic.Int32
+	done := make(chan struct{}, numSubs)
+
+	unsubs := make([]func(), 0, numSubs)
+	for i := 0; i < numSubs; i++ {
+		unsub := p.Subscribe(func(u PresenceUpdate) {
+			received.Add(1)
+			done <- struct{}{}
+		})
+		unsubs = append(unsubs, unsub)
+	}
+
+	p.Update(types.Activity{Details: "1000 subs"})
+
+	timeout := time.After(10 * time.Second)
+	for i := 0; i < numSubs; i++ {
+		select {
+		case <-done:
+		case <-timeout:
+			t.Fatalf("timed out waiting for subscriber %d, received %d/%d", i, received.Load(), numSubs)
+		}
+	}
+
+	for _, unsub := range unsubs {
+		unsub()
+	}
+
+	if got := received.Load(); got != numSubs {
+		t.Errorf("received %d notifications, want %d", got, numSubs)
+	}
+}
+
+func TestConcurrencyLimit(t *testing.T) {
+	logger := zap.NewNop()
+	p := &Presence{
+		interval:    50 * time.Millisecond,
+		logger:      logger,
+		subscribers: make(map[uint64]*subscriber),
+		notifySem:   make(chan struct{}, 3),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+	defer p.Stop()
+
+	const numSubs = 20
+	var maxConcurrent atomic.Int32
+	var currentConcurrent atomic.Int32
+	done := make(chan struct{}, numSubs)
+
+	for i := 0; i < numSubs; i++ {
+		p.Subscribe(func(u PresenceUpdate) {
+			cur := currentConcurrent.Add(1)
+			for {
+				old := maxConcurrent.Load()
+				if cur <= old || maxConcurrent.CompareAndSwap(old, cur) {
+					break
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+			currentConcurrent.Add(-1)
+			done <- struct{}{}
+		})
+	}
+
+	p.Update(types.Activity{Details: "limit test"})
+
+	timeout := time.After(10 * time.Second)
+	for i := 0; i < numSubs; i++ {
+		select {
+		case <-done:
+		case <-timeout:
+			t.Fatalf("timed out waiting for subscriber %d", i)
+		}
+	}
+
+	if got := maxConcurrent.Load(); got > 3 {
+		t.Errorf("max concurrent goroutines = %d, want <= 3", got)
+	}
+}
+
+func TestSubscribeIdempotentUnsubscribe(t *testing.T) {
+	p := newTestPresence(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+	defer p.Stop()
+
+	var count atomic.Int32
+	unsub := p.Subscribe(func(u PresenceUpdate) {
+		count.Add(1)
+	})
+
+	p.Update(types.Activity{Details: "test"})
+	time.Sleep(100 * time.Millisecond)
+	if got := count.Load(); got != 1 {
+		t.Errorf("expected 1 notification, got %d", got)
+	}
+
+	unsub()
+
+	p.Update(types.Activity{Details: "test2"})
+	time.Sleep(100 * time.Millisecond)
+	if got := count.Load(); got != 1 {
+		t.Errorf("expected still 1 notification after unsub, got %d", got)
+	}
+
+	unsub()
+}
