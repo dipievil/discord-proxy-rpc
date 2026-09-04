@@ -87,11 +87,10 @@ func (p *Presence) Update(activity types.Activity) {
 	p.gen++
 	gen := p.gen
 
-	if p.timer == nil || !p.timer.Stop() {
-		p.timer = time.AfterFunc(p.interval, func() { p.flush(gen) })
-	} else {
-		p.timer.Reset(p.interval)
+	if p.timer != nil {
+		p.timer.Stop()
 	}
+	p.timer = time.AfterFunc(p.interval, func() { p.flush(gen) })
 }
 
 func (p *Presence) Current() types.Activity {

@@ -395,9 +395,10 @@ func Test1000ConcurrentSubscribers(t *testing.T) {
 func TestConcurrencyLimit(t *testing.T) {
 	logger := zap.NewNop()
 	p := &Presence{
-		interval:  50 * time.Millisecond,
-		logger:    logger,
-		notifySem: make(chan struct{}, 3),
+		interval:    50 * time.Millisecond,
+		logger:      logger,
+		subscribers: make(map[uint64]*subscriber),
+		notifySem:   make(chan struct{}, 3),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
