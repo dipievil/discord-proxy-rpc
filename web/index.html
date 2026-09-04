@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Discord Rich Presence Proxy - Live Dashboard">
+    <title>Discord Proxy RPC — Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>Discord Proxy RPC</h1>
+        <div id="status" class="status disconnected" role="status" aria-live="polite">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="status-text">Disconnected</span>
+        </div>
+    </header>
+
+    <main>
+        <section id="presence-card" class="card" aria-label="Rich Presence">
+            <h2>Current Activity</h2>
+
+            <div id="presence-type" class="field">
+                <span class="label">Type</span>
+                <span class="value" data-field="type">—</span>
+            </div>
+
+            <div id="presence-details" class="field">
+                <span class="label">Details</span>
+                <span class="value" data-field="details">—</span>
+            </div>
+
+            <div id="presence-state" class="field">
+                <span class="label">State</span>
+                <span class="value" data-field="state">—</span>
+            </div>
+
+            <div id="presence-timestamps" class="field-group">
+                <h3>Timestamps</h3>
+                <div class="field">
+                    <span class="label">Elapsed</span>
+                    <span class="value" data-field="elapsed">—</span>
+                </div>
+                <div class="field">
+                    <span class="label">Remaining</span>
+                    <span class="value" data-field="remaining">—</span>
+                </div>
+            </div>
+
+            <div id="presence-assets" class="field-group">
+                <h3>Assets</h3>
+                <div class="assets-grid">
+                    <div class="asset">
+                        <img id="large-image" src="" alt="Large image" hidden>
+                        <span id="large-text" class="value" data-field="large_text">—</span>
+                    </div>
+                    <div class="asset">
+                        <img id="small-image" src="" alt="Small image" hidden>
+                        <span id="small-text" class="value" data-field="small_text">—</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="presence-party" class="field-group">
+                <h3>Party</h3>
+                <div class="field">
+                    <span class="label">ID</span>
+                    <span class="value" data-field="party_id">—</span>
+                </div>
+                <div class="field">
+                    <span class="label">Size</span>
+                    <span class="value" data-field="party_size">—</span>
+                </div>
+            </div>
+
+            <div id="presence-buttons" class="field-group">
+                <h3>Buttons</h3>
+                <ul id="buttons-list" class="buttons-list">
+                    <li class="empty">No buttons</li>
+                </ul>
+            </div>
+        </section>
+
+        <section id="connection-card" class="card" aria-label="Connection Info">
+            <h2>Connection</h2>
+            <div class="field">
+                <span class="label">IPC State</span>
+                <span class="value" id="ipc-state" data-field="ipc_state">Disconnected</span>
+            </div>
+            <div class="field">
+                <span class="label">Server</span>
+                <span class="value" id="server-info">—</span>
+            </div>
+        </section>
+    </main>
+
+    <button id="copy-json" class="copy-btn" type="button" aria-label="Copy presence JSON to clipboard">
+        Copy JSON
+    </button>
+
+    <div id="toast" class="toast" role="alert" aria-live="assertive" hidden>Copied!</div>
+
+    <script src="app.js"></script>
+</body>
+</html>
