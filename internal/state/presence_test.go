@@ -480,6 +480,11 @@ func TestConcurrentUpdatesAreSafe(t *testing.T) {
 	p.Start(ctx)
 	defer p.Stop()
 
+	var broadcasts atomic.Int32
+	p.Subscribe(func(PresenceUpdate) {
+		broadcasts.Add(1)
+	})
+
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
@@ -490,5 +495,14 @@ func TestConcurrentUpdatesAreSafe(t *testing.T) {
 	}
 	wg.Wait()
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
+
+	got := p.Current()
+	if got.Details != "concurrent" {
+		t.Errorf("final Details = %q, want %q", got.Details, "concurrent")
+	}
+
+	if n := broadcasts.Load(); n != 1 {
+		t.Errorf("subscriber called %d times, want 1 (coalesced broadcast)", n)
+	}
 }

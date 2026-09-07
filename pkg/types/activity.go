@@ -127,7 +127,10 @@ func assetsEqual(a, b *Assets) bool {
 	if b == nil {
 		return a.LargeImage == "" && a.LargeText == "" && a.SmallImage == "" && a.SmallText == ""
 	}
-	return *a == *b
+	return a.LargeImage == b.LargeImage &&
+		a.LargeText == b.LargeText &&
+		a.SmallImage == b.SmallImage &&
+		a.SmallText == b.SmallText
 }
 
 func partyEqual(a, b *Party) bool {

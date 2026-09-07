@@ -79,7 +79,7 @@ func (p *Presence) Update(activity types.Activity) {
 		return
 	}
 
-	p.cached = activity
+	p.cached = activity.Clone()
 	p.gen++
 	gen := p.gen
 
@@ -144,10 +144,10 @@ func (p *Presence) flush(gen uint64) {
 		return
 	}
 	update := PresenceUpdate{
-		Activity:  p.cached,
+		Activity:  p.cached.Clone(),
 		Timestamp: time.Now(),
 	}
-	p.lastNotified = p.cached
+	p.lastNotified = p.cached.Clone()
 	p.timer = nil
 	p.mu.Unlock()
 
