@@ -80,12 +80,14 @@ func TestHubBroadcast(t *testing.T) {
 	conn2 := newMockConn(t)
 
 	client1 := NewClient(conn1, hub)
-	client1.events[MsgTypePresence] = true
+	client1.subscribe(MsgTypePresence)
 	hub.Register(client1)
+	go client1.WritePump()
 
 	client2 := NewClient(conn2, hub)
-	client2.events[MsgTypePresence] = true
+	client2.subscribe(MsgTypePresence)
 	hub.Register(client2)
+	go client2.WritePump()
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -123,18 +125,36 @@ func TestHubBroadcastFiltered(t *testing.T) {
 
 	conn := newMockConn(t)
 	client := NewClient(conn, hub)
-	client.events[MsgTypePresence] = true
+	client.subscribe(MsgTypePresence)
 	hub.Register(client)
+	go client.WritePump()
 
 	time.Sleep(50 * time.Millisecond)
 
-	msg := NewStateMessage(StateConnected)
-	hub.Broadcast(msg)
+	activity := types.Activity{Details: "Test", Type: types.ActivityPlaying}
+	presenceMsg, _ := NewPresenceMessage(activity)
+	hub.Broadcast(presenceMsg)
 
-	conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-	_, _, err := conn.ReadMessage()
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected subscribed message but got error: %v", err)
+	}
+	var received ServerMessage
+	if err := json.Unmarshal(data, &received); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if received.Type != MsgTypePresence {
+		t.Errorf("type = %q, want %q", received.Type, MsgTypePresence)
+	}
+
+	stateMsg := NewStateMessage(StateDisconnected)
+	hub.Broadcast(stateMsg)
+
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	_, _, err = conn.ReadMessage()
 	if err == nil {
-		t.Fatal("expected no message, but got one")
+		t.Fatal("expected no message for unsubscribed event, but got one")
 	}
 }
 
@@ -146,6 +166,7 @@ func TestHubClientCount(t *testing.T) {
 		conn := newMockConn(t)
 		client := NewClient(conn, hub)
 		hub.Register(client)
+		go client.WritePump()
 	}
 
 	time.Sleep(100 * time.Millisecond)
@@ -168,6 +189,7 @@ func TestHubConcurrent(t *testing.T) {
 			conn := newMockConn(t)
 			client := NewClient(conn, hub)
 			hub.Register(client)
+			go client.WritePump()
 			time.Sleep(20 * time.Millisecond)
 			hub.Unregister(client)
 		}()
@@ -177,7 +199,8 @@ func TestHubConcurrent(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	if count := hub.ClientCount(); count != 0 {
-		t.Fatalf("ClientCount = %d, want 0", count)
+		t.Errorf("ClientCount = %d, want 0", count)
+		return
 	}
 
 	for i := 0; i < 5; i++ {
@@ -292,9 +315,9 @@ func TestHubMultipleEventTypes(t *testing.T) {
 
 	conn := newMockConn(t)
 	client := NewClient(conn, hub)
-	client.events[MsgTypePresence] = true
-	client.events[MsgTypeState] = true
+	client.subscribe(MsgTypePresence, MsgTypeState)
 	hub.Register(client)
+	go client.WritePump()
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -418,6 +441,7 @@ func TestClientWritePumpPing(t *testing.T) {
 	t.Cleanup(func() { conn.Close() })
 
 	client := NewClient(conn, hub)
+	client.pingPeriod = 100 * time.Millisecond
 	go client.WritePump()
 
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))

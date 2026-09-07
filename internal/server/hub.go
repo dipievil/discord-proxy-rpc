@@ -16,17 +16,18 @@ import (
 const (
 	writeWait      = 10 * time.Second
 	pongWait       = 60 * time.Second
-	pingPeriod     = 30 * time.Second
+	defaultPingPeriod = 30 * time.Second
 	maxMessageSize = 64 * 1024
 )
 
 type Client struct {
-	id     string
-	conn   *websocket.Conn
-	send   chan []byte
-	events map[string]bool
-	hub    *Hub
-	mu     sync.Mutex
+	id         string
+	conn       *websocket.Conn
+	send       chan []byte
+	events     map[string]bool
+	hub        *Hub
+	mu         sync.Mutex
+	pingPeriod time.Duration
 }
 
 type Hub struct {
@@ -52,12 +53,20 @@ func NewHub(logger *zap.Logger) *Hub {
 }
 
 func (h *Hub) Run(ctx context.Context) {
-	defer close(h.done)
+	defer func() {
+		select {
+		case <-h.done:
+		default:
+			close(h.done)
+		}
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
 			h.closeAllClients()
+			return
+		case <-h.done:
 			return
 		case client := <-h.register:
 			h.mu.Lock()
@@ -97,15 +106,25 @@ func (h *Hub) Run(ctx context.Context) {
 }
 
 func (h *Hub) Register(client *Client) {
-	h.register <- client
+	select {
+	case h.register <- client:
+	case <-h.done:
+	}
 }
 
 func (h *Hub) Unregister(client *Client) {
-	h.unregister <- client
+	select {
+	case h.unregister <- client:
+	case <-h.done:
+	}
 }
 
 func (h *Hub) Broadcast(msg ServerMessage) {
-	h.broadcast <- msg
+	select {
+	case h.broadcast <- msg:
+	default:
+		h.logger.Warn("broadcast channel full, dropping message")
+	}
 }
 
 func (h *Hub) ClientCount() int {
@@ -115,13 +134,12 @@ func (h *Hub) ClientCount() int {
 }
 
 func (h *Hub) Close() {
-	h.mu.Lock()
-	for id, client := range h.clients {
-		close(client.send)
-		delete(h.clients, id)
-		client.conn.Close()
+	h.closeAllClients()
+	select {
+	case <-h.done:
+	default:
+		close(h.done)
 	}
-	h.mu.Unlock()
 }
 
 func (h *Hub) closeAllClients() {
@@ -136,11 +154,12 @@ func (h *Hub) closeAllClients() {
 
 func NewClient(conn *websocket.Conn, hub *Hub) *Client {
 	return &Client{
-		id:     uuid.New().String(),
-		conn:   conn,
-		send:   make(chan []byte, 256),
-		events: make(map[string]bool),
-		hub:    hub,
+		id:         uuid.New().String(),
+		conn:       conn,
+		send:       make(chan []byte, 256),
+		events:     make(map[string]bool),
+		hub:        hub,
+		pingPeriod: defaultPingPeriod,
 	}
 }
 
@@ -200,7 +219,7 @@ func (c *Client) ReadPump() {
 }
 
 func (c *Client) WritePump() {
-	ticker := time.NewTicker(pingPeriod)
+	ticker := time.NewTicker(c.pingPeriod)
 	defer func() {
 		ticker.Stop()
 		c.conn.Close()
@@ -231,5 +250,13 @@ func (c *Client) SendMessage(data []byte) {
 	case c.send <- data:
 	default:
 		c.hub.logger.Warn("client send channel full, dropping message", zap.String("id", c.id))
+	}
+}
+
+func (c *Client) subscribe(events ...string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range events {
+		c.events[e] = true
 	}
 }
