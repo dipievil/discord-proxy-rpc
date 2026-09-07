@@ -1028,6 +1028,13 @@ func TestEmptyActivityHandling(t *testing.T) {
 	})
 	defer unsub()
 
+	p.Update(types.Activity{Details: "game", Type: types.ActivityPlaying})
+	select {
+	case <-notifyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial notification")
+	}
+
 	p.Update(types.Activity{})
 
 	select {
