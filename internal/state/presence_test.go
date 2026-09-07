@@ -469,3 +469,158 @@ func TestSubscribeIdempotentUnsubscribe(t *testing.T) {
 
 	unsub()
 }
+
+func TestIdenticalUpdatesProduceZeroBroadcasts(t *testing.T) {
+	p := newTestPresence(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+	defer p.Stop()
+
+	var count atomic.Int32
+	notifyCh := make(chan struct{}, 10)
+	unsub := p.Subscribe(func(u PresenceUpdate) {
+		count.Add(1)
+		select {
+		case notifyCh <- struct{}{}:
+		default:
+		}
+	})
+	defer unsub()
+
+	activity := types.Activity{Details: "same game", State: "same state", Type: types.ActivityPlaying}
+
+	p.Update(activity)
+	select {
+	case <-notifyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first notification not received")
+	}
+
+	p.Update(activity)
+	p.Update(activity)
+	time.Sleep(200 * time.Millisecond)
+
+	if got := count.Load(); got != 1 {
+		t.Errorf("subscriber called %d times, want 1 (identical updates should not broadcast)", got)
+	}
+}
+
+func TestDifferentFieldTriggersBroadcast(t *testing.T) {
+	p := newTestPresence(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+	defer p.Stop()
+
+	var count atomic.Int32
+	notifyCh := make(chan struct{}, 10)
+	unsub := p.Subscribe(func(u PresenceUpdate) {
+		count.Add(1)
+		select {
+		case notifyCh <- struct{}{}:
+		default:
+		}
+	})
+	defer unsub()
+
+	p.Update(types.Activity{Details: "game1", Type: types.ActivityPlaying})
+	select {
+	case <-notifyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first notification not received")
+	}
+
+	p.Update(types.Activity{Details: "game2", Type: types.ActivityPlaying})
+	select {
+	case <-notifyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second notification not received for changed field")
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	if got := count.Load(); got != 2 {
+		t.Errorf("subscriber called %d times, want 2", got)
+	}
+}
+
+func TestStopStartResetsDiffState(t *testing.T) {
+	p := newTestPresence(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var count atomic.Int32
+	notifyCh := make(chan struct{}, 10)
+	unsub := p.Subscribe(func(u PresenceUpdate) {
+		count.Add(1)
+		select {
+		case notifyCh <- struct{}{}:
+		default:
+		}
+	})
+	defer unsub()
+
+	p.Start(ctx)
+	activity := types.Activity{Details: "game", Type: types.ActivityPlaying}
+	p.Update(activity)
+	select {
+	case <-notifyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("notification not received")
+	}
+
+	p.Stop()
+	cancel()
+
+	p2ctx, p2cancel := context.WithCancel(context.Background())
+	defer p2cancel()
+	p.Start(p2ctx)
+	p.Update(activity)
+
+	select {
+	case <-notifyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("notification not received after restart")
+	}
+
+	p.Stop()
+	p2cancel()
+
+	if got := count.Load(); got != 2 {
+		t.Errorf("subscriber called %d times, want 2 (once per Start cycle)", got)
+	}
+}
+
+func TestConcurrentUpdatesAreSafe(t *testing.T) {
+	p := newTestPresence(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+	defer p.Stop()
+
+	var broadcasts atomic.Int32
+	p.Subscribe(func(PresenceUpdate) {
+		broadcasts.Add(1)
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			p.Update(types.Activity{Details: "concurrent", State: string(rune('A' + i%26))})
+		}(i)
+	}
+	wg.Wait()
+
+	time.Sleep(300 * time.Millisecond)
+
+	got := p.Current()
+	if got.Details != "concurrent" {
+		t.Errorf("final Details = %q, want %q", got.Details, "concurrent")
+	}
+
+	if n := broadcasts.Load(); n != 1 {
+		t.Errorf("subscriber called %d times, want 1 (coalesced broadcast)", n)
+	}
+}

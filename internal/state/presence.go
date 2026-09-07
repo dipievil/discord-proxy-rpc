@@ -24,19 +24,20 @@ type subscriber struct {
 }
 
 type Presence struct {
-	cached      types.Activity
-	mu          sync.RWMutex
-	subscribers map[uint64]*subscriber
-	subMu       sync.Mutex
-	nextSubID   uint64
-	timer       *time.Timer
-	interval    time.Duration
-	logger      *zap.Logger
-	stopCh      chan struct{}
-	done        chan struct{}
-	gen         uint64
-	stopped     bool
-	notifySem   chan struct{}
+	cached       types.Activity
+	lastNotified types.Activity
+	mu           sync.RWMutex
+	subscribers  map[uint64]*subscriber
+	subMu        sync.Mutex
+	nextSubID    uint64
+	timer        *time.Timer
+	interval     time.Duration
+	logger       *zap.Logger
+	stopCh       chan struct{}
+	done         chan struct{}
+	gen          uint64
+	stopped      bool
+	notifySem    chan struct{}
 }
 
 func NewPresence(interval time.Duration, logger *zap.Logger) *Presence {
@@ -56,6 +57,7 @@ func (p *Presence) Start(ctx context.Context) {
 	p.stopCh = make(chan struct{})
 	p.done = make(chan struct{})
 	p.stopped = false
+	p.lastNotified = types.Activity{}
 	p.mu.Unlock()
 	go p.run(ctx)
 }
@@ -83,7 +85,7 @@ func (p *Presence) Update(activity types.Activity) {
 		return
 	}
 
-	p.cached = activity
+	p.cached = activity.Clone()
 	p.gen++
 	gen := p.gen
 
@@ -144,10 +146,16 @@ func (p *Presence) flush(gen uint64) {
 		p.mu.Unlock()
 		return
 	}
+	if p.cached.Equals(p.lastNotified) {
+		p.timer = nil
+		p.mu.Unlock()
+		return
+	}
 	update := PresenceUpdate{
-		Activity:  p.cached,
+		Activity:  p.cached.Clone(),
 		Timestamp: time.Now(),
 	}
+	p.lastNotified = p.cached.Clone()
 	p.timer = nil
 	p.mu.Unlock()
 

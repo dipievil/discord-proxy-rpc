@@ -19,6 +19,7 @@ type DiscordConfig struct {
 	MaxReconnectInterval  time.Duration `mapstructure:"max_reconnect_interval"  yaml:"max_reconnect_interval"`
 	HealthCheckInterval   time.Duration `mapstructure:"health_check_interval"   yaml:"health_check_interval"`
 	HealthCheckTimeout    time.Duration `mapstructure:"health_check_timeout"    yaml:"health_check_timeout"`
+	CoalesceInterval      time.Duration `mapstructure:"coalesce_interval"       yaml:"coalesce_interval"`
 }
 
 type ServerConfig struct {
@@ -60,6 +61,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("discord.max_reconnect_interval", 60*time.Second)
 	v.SetDefault("discord.health_check_interval", 30*time.Second)
 	v.SetDefault("discord.health_check_timeout", 10*time.Second)
+	v.SetDefault("discord.coalesce_interval", 5*time.Second)
 
 	v.SetDefault("server.host", "0.0.0.0")
 	v.SetDefault("server.port", 8765)
@@ -89,6 +91,7 @@ func setupEnv(v *viper.Viper) {
 	_ = v.BindEnv("discord.max_reconnect_interval", "PROXY_DISCORD_MAX_RECONNECT_INTERVAL")
 	_ = v.BindEnv("discord.health_check_interval", "PROXY_DISCORD_HEALTH_CHECK_INTERVAL")
 	_ = v.BindEnv("discord.health_check_timeout", "PROXY_DISCORD_HEALTH_CHECK_TIMEOUT")
+	_ = v.BindEnv("discord.coalesce_interval", "PROXY_DISCORD_COALESCE_INTERVAL")
 
 	_ = v.BindEnv("server.host", "PROXY_SERVER_HOST")
 	_ = v.BindEnv("server.port", "PROXY_SERVER_PORT")
