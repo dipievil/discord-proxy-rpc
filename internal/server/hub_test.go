@@ -180,19 +180,28 @@ func TestHubConcurrent(t *testing.T) {
 	hub, cancel := newTestHub(t)
 	defer cancel()
 
-	var wg sync.WaitGroup
-
+	// Create all connections in the test goroutine to avoid t.Fatal from non-test goroutines.
+	type entry struct {
+		conn   *websocket.Conn
+		client *Client
+	}
+	entries := make([]entry, 10)
 	for i := 0; i < 10; i++ {
+		conn := newMockConn(t)
+		client := NewClient(conn, hub)
+		entries[i] = entry{conn: conn, client: client}
+	}
+
+	var wg sync.WaitGroup
+	for _, e := range entries {
 		wg.Add(1)
-		go func() {
+		go func(e entry) {
 			defer wg.Done()
-			conn := newMockConn(t)
-			client := NewClient(conn, hub)
-			hub.Register(client)
-			go client.WritePump()
+			hub.Register(e.client)
+			go e.client.WritePump()
 			time.Sleep(20 * time.Millisecond)
-			hub.Unregister(client)
-		}()
+			hub.Unregister(e.client)
+		}(e)
 	}
 
 	wg.Wait()
