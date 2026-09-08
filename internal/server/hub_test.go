@@ -363,7 +363,10 @@ func TestClientReadPumpSubscribe(t *testing.T) {
 	<-serverReady
 	time.Sleep(50 * time.Millisecond)
 
-	subMsg := NewSubscribeMessage([]string{MsgTypePresence, MsgTypeState})
+	subMsg, err := NewSubscribeMessage([]string{MsgTypePresence, MsgTypeState})
+	if err != nil {
+		t.Fatalf("NewSubscribeMessage: %v", err)
+	}
 	data, _ := json.Marshal(subMsg)
 
 	serverConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
