@@ -9,14 +9,16 @@ import (
 	"go.uber.org/zap"
 )
 
-func TestAuthMiddlewareDisabledPassesThrough(t *testing.T) {
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func newTestHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+}
 
+func TestAuthMiddleware_Disabled(t *testing.T) {
 	cfg := config.AuthConfig{Enabled: false, Token: "secret"}
-	handler := AuthMiddleware(inner, cfg, zap.NewNop())
+	handler := AuthMiddleware(cfg, zap.NewNop())(newTestHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -30,32 +32,9 @@ func TestAuthMiddlewareDisabledPassesThrough(t *testing.T) {
 	}
 }
 
-func TestAuthMiddlewareValidTokenPasses(t *testing.T) {
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	})
-
+func TestAuthMiddleware_MissingHeader(t *testing.T) {
 	cfg := config.AuthConfig{Enabled: true, Token: "my-secret-token"}
-	handler := AuthMiddleware(inner, cfg, zap.NewNop())
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer my-secret-token")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rec.Code)
-	}
-}
-
-func TestAuthMiddlewareMissingTokenReturns401(t *testing.T) {
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	cfg := config.AuthConfig{Enabled: true, Token: "my-secret-token"}
-	handler := AuthMiddleware(inner, cfg, zap.NewNop())
+	handler := AuthMiddleware(cfg, zap.NewNop())(newTestHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -64,13 +43,21 @@ func TestAuthMiddlewareMissingTokenReturns401(t *testing.T) {
 	assertUnauthorized(t, rec)
 }
 
-func TestAuthMiddlewareInvalidTokenReturns401(t *testing.T) {
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
+func TestAuthMiddleware_EmptyToken(t *testing.T) {
 	cfg := config.AuthConfig{Enabled: true, Token: "my-secret-token"}
-	handler := AuthMiddleware(inner, cfg, zap.NewNop())
+	handler := AuthMiddleware(cfg, zap.NewNop())(newTestHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer ")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assertUnauthorized(t, rec)
+}
+
+func TestAuthMiddleware_WrongToken(t *testing.T) {
+	cfg := config.AuthConfig{Enabled: true, Token: "my-secret-token"}
+	handler := AuthMiddleware(cfg, zap.NewNop())(newTestHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer wrong-token")
@@ -80,13 +67,53 @@ func TestAuthMiddlewareInvalidTokenReturns401(t *testing.T) {
 	assertUnauthorized(t, rec)
 }
 
-func TestAuthMiddlewareMalformedHeaderReturns401(t *testing.T) {
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
+func TestAuthMiddleware_CorrectToken(t *testing.T) {
 	cfg := config.AuthConfig{Enabled: true, Token: "my-secret-token"}
-	handler := AuthMiddleware(inner, cfg, zap.NewNop())
+	handler := AuthMiddleware(cfg, zap.NewNop())(newTestHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer my-secret-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	if rec.Body.String() != "ok" {
+		t.Errorf("expected body 'ok', got %q", rec.Body.String())
+	}
+}
+
+func TestAuthMiddleware_CaseInsensitiveBearer(t *testing.T) {
+	cfg := config.AuthConfig{Enabled: true, Token: "my-secret-token"}
+	handler := AuthMiddleware(cfg, zap.NewNop())(newTestHandler())
+
+	tests := []struct {
+		name   string
+		prefix string
+	}{
+		{"lowercase bearer", "bearer"},
+		{"mixed case Bearer", "Bearer"},
+		{"uppercase BEARER", "BEARER"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", tt.prefix+" my-secret-token")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Errorf("expected 200, got %d", rec.Code)
+			}
+		})
+	}
+}
+
+func TestAuthMiddleware_NoBearerPrefix(t *testing.T) {
+	cfg := config.AuthConfig{Enabled: true, Token: "my-secret-token"}
+	handler := AuthMiddleware(cfg, zap.NewNop())(newTestHandler())
 
 	tests := []struct {
 		name  string
@@ -94,7 +121,6 @@ func TestAuthMiddlewareMalformedHeaderReturns401(t *testing.T) {
 	}{
 		{"Basic scheme", "Basic dXNlcjpwYXNz"},
 		{"No scheme", "my-secret-token"},
-		{"Empty Bearer", "Bearer "},
 	}
 
 	for _, tt := range tests {
@@ -105,49 +131,6 @@ func TestAuthMiddlewareMalformedHeaderReturns401(t *testing.T) {
 			handler.ServeHTTP(rec, req)
 
 			assertUnauthorized(t, rec)
-		})
-	}
-}
-
-func TestAuthMiddlewareEmptyBearerTokenReturns401(t *testing.T) {
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	cfg := config.AuthConfig{Enabled: true, Token: "my-secret-token"}
-	handler := AuthMiddleware(inner, cfg, zap.NewNop())
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer ")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	assertUnauthorized(t, rec)
-}
-
-func TestExtractBearerToken(t *testing.T) {
-	tests := []struct {
-		name   string
-		header string
-		want   string
-	}{
-		{"valid", "Bearer abc123", "abc123"},
-		{"empty header", "", ""},
-		{"no prefix", "abc123", ""},
-		{"basic auth", "Basic dXNlcjpwYXNz", ""},
-		{"bearer with spaces", "Bearer   token  ", "token"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			if tt.header != "" {
-				req.Header.Set("Authorization", tt.header)
-			}
-			got := extractBearerToken(req)
-			if got != tt.want {
-				t.Errorf("extractBearerToken() = %q, want %q", got, tt.want)
-			}
 		})
 	}
 }

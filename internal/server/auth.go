@@ -9,32 +9,34 @@ import (
 	"go.uber.org/zap"
 )
 
-func AuthMiddleware(next http.Handler, cfg config.AuthConfig, logger *zap.Logger) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !cfg.Enabled {
+func AuthMiddleware(cfg config.AuthConfig, logger *zap.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !cfg.Enabled {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			token := extractBearerToken(r)
+			if token == "" {
+				logger.Warn("auth: missing or malformed Authorization header",
+					zap.String("remote", r.RemoteAddr),
+				)
+				writeUnauthorized(w)
+				return
+			}
+
+			if subtle.ConstantTimeCompare([]byte(token), []byte(cfg.Token)) != 1 {
+				logger.Warn("auth: invalid token",
+					zap.String("remote", r.RemoteAddr),
+				)
+				writeUnauthorized(w)
+				return
+			}
+
 			next.ServeHTTP(w, r)
-			return
-		}
-
-		token := extractBearerToken(r)
-		if token == "" {
-			logger.Warn("auth: missing or malformed Authorization header",
-				zap.String("remote", r.RemoteAddr),
-			)
-			writeUnauthorized(w)
-			return
-		}
-
-		if subtle.ConstantTimeCompare([]byte(token), []byte(cfg.Token)) != 1 {
-			logger.Warn("auth: invalid token",
-				zap.String("remote", r.RemoteAddr),
-			)
-			writeUnauthorized(w)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
+		})
+	}
 }
 
 func extractBearerToken(r *http.Request) string {
@@ -43,12 +45,12 @@ func extractBearerToken(r *http.Request) string {
 		return ""
 	}
 
-	const prefix = "Bearer "
-	if !strings.HasPrefix(auth, prefix) {
+	parts := strings.SplitN(auth, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
 		return ""
 	}
 
-	token := strings.TrimSpace(auth[len(prefix):])
+	token := strings.TrimSpace(parts[1])
 	if token == "" {
 		return ""
 	}
