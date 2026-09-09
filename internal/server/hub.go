@@ -14,10 +14,10 @@ import (
 )
 
 const (
-	writeWait      = 10 * time.Second
-	pongWait       = 60 * time.Second
+	writeWait         = 10 * time.Second
+	pongWait          = 60 * time.Second
 	defaultPingPeriod = 30 * time.Second
-	maxMessageSize = 64 * 1024
+	maxMessageSize    = 64 * 1024
 )
 
 type Client struct {
@@ -31,14 +31,14 @@ type Client struct {
 }
 
 type Hub struct {
-	clients             map[string]*Client
-	mu                  sync.RWMutex
-	register            chan *Client
-	unregister          chan *Client
-	broadcast           chan ServerMessage
-	logger              *zap.Logger
-	done                chan struct{}
-	GetCurrentPresence  func() types.Activity
+	clients            map[string]*Client
+	mu                 sync.RWMutex
+	register           chan *Client
+	unregister         chan *Client
+	broadcast          chan ServerMessage
+	logger             *zap.Logger
+	done               chan struct{}
+	GetCurrentPresence func() types.Activity
 }
 
 func NewHub(logger *zap.Logger) *Hub {
