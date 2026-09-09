@@ -97,7 +97,7 @@ func TestShutdownNilServer(t *testing.T) {
 func TestAdvertiseWithoutNetwork(t *testing.T) {
 	a, err := NewAdvertiser(config.MdnsConfig{
 		ServiceType: "_test._tcp",
-	}, 0, zap.NewNop())
+	}, 19999, zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestAdvertiseWithoutNetwork(t *testing.T) {
 func TestDoubleAdvertise(t *testing.T) {
 	a, err := NewAdvertiser(config.MdnsConfig{
 		ServiceType: "_test._tcp",
-	}, 0, zap.NewNop())
+	}, 19998, zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

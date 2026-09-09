@@ -388,6 +388,8 @@ func TestSubscribeEventsMarshalJSON(t *testing.T) {
 		events   SubscribeEvents
 		expected string
 	}{
+		{"nil events", nil, `[]`},
+		{"empty events", SubscribeEvents{}, `[]`},
 		{"with events", SubscribeEvents{"presence", "state"}, `["presence","state"]`},
 	}
 

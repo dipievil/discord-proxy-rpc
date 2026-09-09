@@ -34,7 +34,11 @@ func newMockConn(t *testing.T) *websocket.Conn {
 		}
 		defer c.Close()
 		for {
-			if _, _, err := c.ReadMessage(); err != nil {
+			mt, data, err := c.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := c.WriteMessage(mt, data); err != nil {
 				return
 			}
 		}
@@ -80,12 +84,14 @@ func TestHubBroadcast(t *testing.T) {
 	conn2 := newMockConn(t)
 
 	client1 := NewClient(conn1, hub)
-	client1.events[MsgTypePresence] = true
+	client1.subscribe(MsgTypePresence)
 	hub.Register(client1)
+	go client1.WritePump()
 
 	client2 := NewClient(conn2, hub)
-	client2.events[MsgTypePresence] = true
+	client2.subscribe(MsgTypePresence)
 	hub.Register(client2)
+	go client2.WritePump()
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -123,18 +129,36 @@ func TestHubBroadcastFiltered(t *testing.T) {
 
 	conn := newMockConn(t)
 	client := NewClient(conn, hub)
-	client.events[MsgTypePresence] = true
+	client.subscribe(MsgTypePresence)
 	hub.Register(client)
+	go client.WritePump()
 
 	time.Sleep(50 * time.Millisecond)
 
-	msg := NewStateMessage(StateConnected)
-	hub.Broadcast(msg)
+	activity := types.Activity{Details: "Test", Type: types.ActivityPlaying}
+	presenceMsg, _ := NewPresenceMessage(activity)
+	hub.Broadcast(presenceMsg)
 
-	conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-	_, _, err := conn.ReadMessage()
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected subscribed message but got error: %v", err)
+	}
+	var received ServerMessage
+	if err := json.Unmarshal(data, &received); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if received.Type != MsgTypePresence {
+		t.Errorf("type = %q, want %q", received.Type, MsgTypePresence)
+	}
+
+	stateMsg := NewStateMessage(StateDisconnected)
+	hub.Broadcast(stateMsg)
+
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	_, _, err = conn.ReadMessage()
 	if err == nil {
-		t.Fatal("expected no message, but got one")
+		t.Fatal("expected no message for unsubscribed event, but got one")
 	}
 }
 
@@ -146,6 +170,7 @@ func TestHubClientCount(t *testing.T) {
 		conn := newMockConn(t)
 		client := NewClient(conn, hub)
 		hub.Register(client)
+		go client.WritePump()
 	}
 
 	time.Sleep(100 * time.Millisecond)
@@ -159,25 +184,35 @@ func TestHubConcurrent(t *testing.T) {
 	hub, cancel := newTestHub(t)
 	defer cancel()
 
-	var wg sync.WaitGroup
-
+	type entry struct {
+		conn   *websocket.Conn
+		client *Client
+	}
+	entries := make([]entry, 10)
 	for i := 0; i < 10; i++ {
+		conn := newMockConn(t)
+		client := NewClient(conn, hub)
+		entries[i] = entry{conn: conn, client: client}
+	}
+
+	var wg sync.WaitGroup
+	for _, e := range entries {
 		wg.Add(1)
-		go func() {
+		go func(e entry) {
 			defer wg.Done()
-			conn := newMockConn(t)
-			client := NewClient(conn, hub)
-			hub.Register(client)
+			hub.Register(e.client)
+			go e.client.WritePump()
 			time.Sleep(20 * time.Millisecond)
-			hub.Unregister(client)
-		}()
+			hub.Unregister(e.client)
+		}(e)
 	}
 
 	wg.Wait()
 	time.Sleep(50 * time.Millisecond)
 
 	if count := hub.ClientCount(); count != 0 {
-		t.Fatalf("ClientCount = %d, want 0", count)
+		t.Errorf("ClientCount = %d, want 0", count)
+		return
 	}
 
 	for i := 0; i < 5; i++ {
@@ -219,6 +254,7 @@ func TestHubGetCurrentPresence(t *testing.T) {
 
 	var serverConn *websocket.Conn
 	serverReady := make(chan struct{})
+	inbox := make(chan []byte, 16)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{}
@@ -229,9 +265,11 @@ func TestHubGetCurrentPresence(t *testing.T) {
 		serverConn = c
 		close(serverReady)
 		for {
-			if _, _, err := c.ReadMessage(); err != nil {
+			_, data, err := c.ReadMessage()
+			if err != nil {
 				return
 			}
+			inbox <- data
 		}
 	}))
 	defer server.Close()
@@ -263,10 +301,11 @@ func TestHubGetCurrentPresence(t *testing.T) {
 		t.Fatalf("WriteMessage: %v", err)
 	}
 
-	serverConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, received, err := serverConn.ReadMessage()
-	if err != nil {
-		t.Fatalf("ReadMessage: %v", err)
+	var received []byte
+	select {
+	case received = <-inbox:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for current message")
 	}
 
 	var resp ServerMessage
@@ -292,9 +331,9 @@ func TestHubMultipleEventTypes(t *testing.T) {
 
 	conn := newMockConn(t)
 	client := NewClient(conn, hub)
-	client.events[MsgTypePresence] = true
-	client.events[MsgTypeState] = true
+	client.subscribe(MsgTypePresence, MsgTypeState)
 	hub.Register(client)
+	go client.WritePump()
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -332,6 +371,7 @@ func TestClientReadPumpSubscribe(t *testing.T) {
 
 	var serverConn *websocket.Conn
 	serverReady := make(chan struct{})
+	inbox := make(chan []byte, 16)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{}
@@ -342,9 +382,11 @@ func TestClientReadPumpSubscribe(t *testing.T) {
 		serverConn = c
 		close(serverReady)
 		for {
-			if _, _, err := c.ReadMessage(); err != nil {
+			_, data, err := c.ReadMessage()
+			if err != nil {
 				return
 			}
+			inbox <- data
 		}
 	}))
 	defer server.Close()
@@ -357,6 +399,7 @@ func TestClientReadPumpSubscribe(t *testing.T) {
 	t.Cleanup(func() { conn.Close() })
 
 	client := NewClient(conn, hub)
+	hub.Register(client)
 	go client.WritePump()
 	go client.ReadPump()
 
@@ -380,10 +423,11 @@ func TestClientReadPumpSubscribe(t *testing.T) {
 	presenceMsg, _ := NewPresenceMessage(activity)
 	hub.Broadcast(presenceMsg)
 
-	serverConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, received, err := serverConn.ReadMessage()
-	if err != nil {
-		t.Fatalf("ReadMessage: %v", err)
+	var received []byte
+	select {
+	case received = <-inbox:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for presence message")
 	}
 
 	var resp ServerMessage
@@ -420,13 +464,31 @@ func TestClientWritePumpPing(t *testing.T) {
 	}
 	t.Cleanup(func() { conn.Close() })
 
+	pongReceived := make(chan struct{})
+	conn.SetPongHandler(func(string) error {
+		select {
+		case <-pongReceived:
+		default:
+			close(pongReceived)
+		}
+		return nil
+	})
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
 	client := NewClient(conn, hub)
+	client.pingPeriod = 100 * time.Millisecond
 	go client.WritePump()
 
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	_, _, err = conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("expected ping but got error: %v", err)
+	select {
+	case <-pongReceived:
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected pong reply to ping, got none")
 	}
 }
 

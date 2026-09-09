@@ -64,9 +64,16 @@ func (m *ServerMessage) UnmarshalJSON(data []byte) error {
 
 type SubscribeEvents []string
 
+func (e SubscribeEvents) MarshalJSON() ([]byte, error) {
+	if len(e) == 0 {
+		return json.Marshal([]string{})
+	}
+	return json.Marshal([]string(e))
+}
+
 type ClientMessage struct {
-	Type           string          `json:"type"`
-	SubscribeEvents SubscribeEvents `json:"events"`
+	Type            string          `json:"type"`
+	SubscribeEvents SubscribeEvents `json:"events,omitempty"`
 }
 
 func (m *ClientMessage) UnmarshalJSON(data []byte) error {
