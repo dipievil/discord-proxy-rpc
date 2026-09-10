@@ -15,18 +15,29 @@ type PresenceUpdate struct {
 	Timestamp time.Time
 }
 
+const DefaultMaxConcurrentCallbacks = 50
+
+type subscriber struct {
+	id   uint64
+	fn   func(PresenceUpdate)
+	once sync.Once
+}
+
 type Presence struct {
-	cached      types.Activity
-	mu          sync.RWMutex
-	subscribers []func(PresenceUpdate)
-	subMu       sync.Mutex
-	timer       *time.Timer
-	interval    time.Duration
-	logger      *zap.Logger
-	stopCh      chan struct{}
-	done        chan struct{}
-	gen         uint64
-	stopped     bool
+	cached       types.Activity
+	lastNotified types.Activity
+	mu           sync.RWMutex
+	subscribers  map[uint64]*subscriber
+	subMu        sync.Mutex
+	nextSubID    uint64
+	timer        *time.Timer
+	interval     time.Duration
+	logger       *zap.Logger
+	stopCh       chan struct{}
+	done         chan struct{}
+	gen          uint64
+	stopped      bool
+	notifySem    chan struct{}
 }
 
 func NewPresence(interval time.Duration, logger *zap.Logger) *Presence {
@@ -34,8 +45,10 @@ func NewPresence(interval time.Duration, logger *zap.Logger) *Presence {
 		interval = 50 * time.Millisecond
 	}
 	return &Presence{
-		interval: interval,
-		logger:   logger,
+		interval:    interval,
+		logger:      logger,
+		subscribers: make(map[uint64]*subscriber),
+		notifySem:   make(chan struct{}, DefaultMaxConcurrentCallbacks),
 	}
 }
 
@@ -44,6 +57,7 @@ func (p *Presence) Start(ctx context.Context) {
 	p.stopCh = make(chan struct{})
 	p.done = make(chan struct{})
 	p.stopped = false
+	p.lastNotified = types.Activity{}
 	p.mu.Unlock()
 	go p.run(ctx)
 }
@@ -71,15 +85,14 @@ func (p *Presence) Update(activity types.Activity) {
 		return
 	}
 
-	p.cached = activity
+	p.cached = activity.Clone()
 	p.gen++
 	gen := p.gen
 
-	if p.timer == nil || !p.timer.Stop() {
-		p.timer = time.AfterFunc(p.interval, func() { p.flush(gen) })
-	} else {
-		p.timer.Reset(p.interval)
+	if p.timer != nil {
+		p.timer.Stop()
 	}
+	p.timer = time.AfterFunc(p.interval, func() { p.flush(gen) })
 }
 
 func (p *Presence) Current() types.Activity {
@@ -90,36 +103,40 @@ func (p *Presence) Current() types.Activity {
 
 func (p *Presence) Subscribe(fn func(PresenceUpdate)) func() {
 	p.subMu.Lock()
-	p.subscribers = append(p.subscribers, fn)
+	p.nextSubID++
+	id := p.nextSubID
+	s := &subscriber{id: id, fn: fn}
+	p.subscribers[id] = s
 	p.subMu.Unlock()
 
 	return func() {
-		p.subMu.Lock()
-		defer p.subMu.Unlock()
-		for i := range p.subscribers {
-			if p.subscribers[i] == fn {
-				p.subscribers = append(p.subscribers[:i], p.subscribers[i+1:]...)
-				return
-			}
-		}
+		s.once.Do(func() {
+			p.subMu.Lock()
+			delete(p.subscribers, id)
+			p.subMu.Unlock()
+		})
 	}
 }
 
 func (p *Presence) notify(update PresenceUpdate) {
 	p.subMu.Lock()
-	subs := make([]func(PresenceUpdate), len(p.subscribers))
-	copy(subs, p.subscribers)
+	subs := make([]*subscriber, 0, len(p.subscribers))
+	for _, s := range p.subscribers {
+		subs = append(subs, s)
+	}
 	p.subMu.Unlock()
 
-	for _, fn := range subs {
-		go func(f func(PresenceUpdate)) {
+	for _, s := range subs {
+		p.notifySem <- struct{}{}
+		go func(sub *subscriber) {
+			defer func() { <-p.notifySem }()
 			defer func() {
 				if r := recover(); r != nil {
 					p.logger.Error("subscriber panic recovered", zap.Any("recover", r))
 				}
 			}()
-			f(update)
-		}(fn)
+			sub.fn(update)
+		}(s)
 	}
 }
 
@@ -129,10 +146,16 @@ func (p *Presence) flush(gen uint64) {
 		p.mu.Unlock()
 		return
 	}
+	if p.cached.Equals(p.lastNotified) {
+		p.timer = nil
+		p.mu.Unlock()
+		return
+	}
 	update := PresenceUpdate{
-		Activity:  p.cached,
+		Activity:  p.cached.Clone(),
 		Timestamp: time.Now(),
 	}
+	p.lastNotified = p.cached.Clone()
 	p.timer = nil
 	p.mu.Unlock()
 

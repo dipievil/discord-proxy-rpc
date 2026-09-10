@@ -34,7 +34,11 @@ func newMockConn(t *testing.T) *websocket.Conn {
 		}
 		defer c.Close()
 		for {
-			if _, _, err := c.ReadMessage(); err != nil {
+			mt, data, err := c.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := c.WriteMessage(mt, data); err != nil {
 				return
 			}
 		}
@@ -158,6 +162,73 @@ func TestHubBroadcastFiltered(t *testing.T) {
 	}
 }
 
+func TestHubBroadcastStateInjectsClientID(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	hub.ClientID = "test-client-id"
+
+	conn := newMockConn(t)
+	client := NewClient(conn, hub)
+	client.subscribe(MsgTypeState)
+	hub.Register(client)
+	go client.WritePump()
+
+	time.Sleep(50 * time.Millisecond)
+
+	stateMsg := NewStateMessage(StateConnected)
+	hub.Broadcast(stateMsg)
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+
+	var received ServerMessage
+	if err := json.Unmarshal(data, &received); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if received.Type != MsgTypeState {
+		t.Errorf("type = %q, want %q", received.Type, MsgTypeState)
+	}
+	if received.ClientID != "test-client-id" {
+		t.Errorf("ClientID = %q, want %q", received.ClientID, "test-client-id")
+	}
+}
+
+func TestHubBroadcastStateKeepsExplicitClientID(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	hub.ClientID = "hub-client-id"
+
+	conn := newMockConn(t)
+	client := NewClient(conn, hub)
+	client.subscribe(MsgTypeState)
+	hub.Register(client)
+	go client.WritePump()
+
+	time.Sleep(50 * time.Millisecond)
+
+	stateMsg := NewStateMessage(StateConnected, "explicit-client-id")
+	hub.Broadcast(stateMsg)
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+
+	var received ServerMessage
+	if err := json.Unmarshal(data, &received); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if received.ClientID != "explicit-client-id" {
+		t.Errorf("ClientID = %q, want %q", received.ClientID, "explicit-client-id")
+	}
+}
+
 func TestHubClientCount(t *testing.T) {
 	hub, cancel := newTestHub(t)
 	defer cancel()
@@ -180,7 +251,6 @@ func TestHubConcurrent(t *testing.T) {
 	hub, cancel := newTestHub(t)
 	defer cancel()
 
-	// Create all connections in the test goroutine to avoid t.Fatal from non-test goroutines.
 	type entry struct {
 		conn   *websocket.Conn
 		client *Client
@@ -251,6 +321,7 @@ func TestHubGetCurrentPresence(t *testing.T) {
 
 	var serverConn *websocket.Conn
 	serverReady := make(chan struct{})
+	inbox := make(chan []byte, 16)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{}
@@ -261,9 +332,11 @@ func TestHubGetCurrentPresence(t *testing.T) {
 		serverConn = c
 		close(serverReady)
 		for {
-			if _, _, err := c.ReadMessage(); err != nil {
+			_, data, err := c.ReadMessage()
+			if err != nil {
 				return
 			}
+			inbox <- data
 		}
 	}))
 	defer server.Close()
@@ -295,10 +368,11 @@ func TestHubGetCurrentPresence(t *testing.T) {
 		t.Fatalf("WriteMessage: %v", err)
 	}
 
-	serverConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, received, err := serverConn.ReadMessage()
-	if err != nil {
-		t.Fatalf("ReadMessage: %v", err)
+	var received []byte
+	select {
+	case received = <-inbox:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for current message")
 	}
 
 	var resp ServerMessage
@@ -364,6 +438,7 @@ func TestClientReadPumpSubscribe(t *testing.T) {
 
 	var serverConn *websocket.Conn
 	serverReady := make(chan struct{})
+	inbox := make(chan []byte, 16)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{}
@@ -374,9 +449,11 @@ func TestClientReadPumpSubscribe(t *testing.T) {
 		serverConn = c
 		close(serverReady)
 		for {
-			if _, _, err := c.ReadMessage(); err != nil {
+			_, data, err := c.ReadMessage()
+			if err != nil {
 				return
 			}
+			inbox <- data
 		}
 	}))
 	defer server.Close()
@@ -389,13 +466,17 @@ func TestClientReadPumpSubscribe(t *testing.T) {
 	t.Cleanup(func() { conn.Close() })
 
 	client := NewClient(conn, hub)
+	hub.Register(client)
 	go client.WritePump()
 	go client.ReadPump()
 
 	<-serverReady
 	time.Sleep(50 * time.Millisecond)
 
-	subMsg := NewSubscribeMessage([]string{MsgTypePresence, MsgTypeState})
+	subMsg, err := NewSubscribeMessage([]string{MsgTypePresence, MsgTypeState})
+	if err != nil {
+		t.Fatalf("NewSubscribeMessage: %v", err)
+	}
 	data, _ := json.Marshal(subMsg)
 
 	serverConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
@@ -409,10 +490,11 @@ func TestClientReadPumpSubscribe(t *testing.T) {
 	presenceMsg, _ := NewPresenceMessage(activity)
 	hub.Broadcast(presenceMsg)
 
-	serverConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, received, err := serverConn.ReadMessage()
-	if err != nil {
-		t.Fatalf("ReadMessage: %v", err)
+	var received []byte
+	select {
+	case received = <-inbox:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for presence message")
 	}
 
 	var resp ServerMessage
@@ -449,14 +531,31 @@ func TestClientWritePumpPing(t *testing.T) {
 	}
 	t.Cleanup(func() { conn.Close() })
 
+	pongReceived := make(chan struct{})
+	conn.SetPongHandler(func(string) error {
+		select {
+		case <-pongReceived:
+		default:
+			close(pongReceived)
+		}
+		return nil
+	})
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
 	client := NewClient(conn, hub)
 	client.pingPeriod = 100 * time.Millisecond
 	go client.WritePump()
 
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	_, _, err = conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("expected ping but got error: %v", err)
+	select {
+	case <-pongReceived:
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected pong reply to ping, got none")
 	}
 }
 

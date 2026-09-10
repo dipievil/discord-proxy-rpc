@@ -83,6 +83,30 @@ func TestStateMessageRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStateMessageRoundTripWithClientID(t *testing.T) {
+	original := NewStateMessage(StateConnected, "123456789")
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var decoded ServerMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if decoded.Type != MsgTypeState {
+		t.Errorf("Type = %q, want %q", decoded.Type, MsgTypeState)
+	}
+	if decoded.Status != StateConnected {
+		t.Errorf("Status = %q, want %q", decoded.Status, StateConnected)
+	}
+	if decoded.ClientID != "123456789" {
+		t.Errorf("ClientID = %q, want %q", decoded.ClientID, "123456789")
+	}
+}
+
 func TestCurrentMessageRoundTrip(t *testing.T) {
 	activity := types.Activity{
 		Details: "Listening to Spotify",
@@ -123,7 +147,10 @@ func TestCurrentMessageRoundTrip(t *testing.T) {
 func TestSubscribeMessageRoundTrip(t *testing.T) {
 	events := []string{MsgTypePresence, MsgTypeState}
 
-	original := NewSubscribeMessage(events)
+	original, err := NewSubscribeMessage(events)
+	if err != nil {
+		t.Fatalf("NewSubscribeMessage: %v", err)
+	}
 
 	data, err := json.Marshal(original)
 	if err != nil {
@@ -148,24 +175,14 @@ func TestSubscribeMessageRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSubscribeMessageEmptyEvents(t *testing.T) {
-	original := ClientMessage{Type: MsgTypeSubscribe, SubscribeEvents: SubscribeEvents{}}
-
-	data, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
+func TestSubscribeMessageRejectsEmptyEvents(t *testing.T) {
+	_, err := NewSubscribeMessage([]string{})
+	if err == nil {
+		t.Fatal("expected error for empty events, got nil")
 	}
-
-	var decoded ClientMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-
-	if decoded.Type != MsgTypeSubscribe {
-		t.Errorf("Type = %q, want %q", decoded.Type, MsgTypeSubscribe)
-	}
-	if len(decoded.SubscribeEvents) != 0 {
-		t.Errorf("Events len = %d, want 0", len(decoded.SubscribeEvents))
+	_, err = NewSubscribeMessage(nil)
+	if err == nil {
+		t.Fatal("expected error for nil events, got nil")
 	}
 }
 
@@ -190,19 +207,20 @@ func TestGetCurrentMessageRoundTrip(t *testing.T) {
 func TestInvalidJSON(t *testing.T) {
 	tests := []struct {
 		name string
+		kind string
 		data string
 	}{
-		{"server malformed", `{"type": "presence", "payload": {broken}`},
-		{"client malformed", `{"type": "subscribe", "events": [broken]}`},
-		{"server empty", ``},
-		{"client empty", ``},
-		{"server not json", `not json`},
-		{"client not json", `not json`},
+		{"server malformed", "server", `{"type": "presence", "payload": {broken}`},
+		{"client malformed", "client", `{"type": "subscribe", "events": [broken]}`},
+		{"server empty", "server", ``},
+		{"client empty", "client", ``},
+		{"server not json", "server", `not json`},
+		{"client not json", "client", `not json`},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if strings.HasPrefix(tt.name, "server") {
+			if tt.kind == "server" {
 				var msg ServerMessage
 				err := msg.UnmarshalJSON([]byte(tt.data))
 				if err == nil {
@@ -308,11 +326,17 @@ func TestActivityFieldPreservation(t *testing.T) {
 	if got.State != activity.State {
 		t.Errorf("State = %q, want %q", got.State, activity.State)
 	}
+	if got.Timestamps == nil {
+		t.Fatal("Timestamps is nil")
+	}
 	if got.Timestamps.Start != activity.Timestamps.Start {
 		t.Errorf("Timestamps.Start = %d, want %d", got.Timestamps.Start, activity.Timestamps.Start)
 	}
 	if got.Timestamps.End != activity.Timestamps.End {
 		t.Errorf("Timestamps.End = %d, want %d", got.Timestamps.End, activity.Timestamps.End)
+	}
+	if got.Assets == nil {
+		t.Fatal("Assets is nil")
 	}
 	if got.Assets.LargeImage != activity.Assets.LargeImage {
 		t.Errorf("Assets.LargeImage = %q, want %q", got.Assets.LargeImage, activity.Assets.LargeImage)
@@ -325,6 +349,9 @@ func TestActivityFieldPreservation(t *testing.T) {
 	}
 	if got.Assets.SmallText != activity.Assets.SmallText {
 		t.Errorf("Assets.SmallText = %q, want %q", got.Assets.SmallText, activity.Assets.SmallText)
+	}
+	if got.Party == nil {
+		t.Fatal("Party is nil")
 	}
 	if got.Party.ID != activity.Party.ID {
 		t.Errorf("Party.ID = %q, want %q", got.Party.ID, activity.Party.ID)
@@ -359,6 +386,23 @@ func TestStateMessageOmitsPayload(t *testing.T) {
 	jsonStr := string(data)
 	if strings.Contains(jsonStr, "payload") {
 		t.Errorf("state message should not contain payload, got: %s", jsonStr)
+	}
+}
+
+func TestPresenceMessageOmitsClientID(t *testing.T) {
+	msg, err := NewPresenceMessage(types.Activity{Details: "test"})
+	if err != nil {
+		t.Fatalf("NewPresenceMessage: %v", err)
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	jsonStr := string(data)
+	if strings.Contains(jsonStr, "client_id") {
+		t.Errorf("presence message should not contain client_id, got: %s", jsonStr)
 	}
 }
 
@@ -398,6 +442,63 @@ func TestSubscribeEventsMarshalJSON(t *testing.T) {
 			}
 			if string(data) != tt.expected {
 				t.Errorf("got %s, want %s", string(data), tt.expected)
+			}
+		})
+	}
+}
+
+func TestConnectionStateValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		status ConnectionState
+		valid  bool
+	}{
+		{"connected", StateConnected, true},
+		{"disconnected", StateDisconnected, true},
+		{"reconnecting", StateReconnecting, true},
+		{"bogus", ConnectionState("bogus"), false},
+		{"empty", ConnectionState(""), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := []byte(`{"type":"state","status":"` + string(tt.status) + `"}`)
+			var msg ServerMessage
+			err := msg.UnmarshalJSON(data)
+			if tt.valid && err != nil {
+				t.Errorf("expected valid, got error: %v", err)
+			}
+			if !tt.valid && err == nil {
+				t.Error("expected error for invalid state, got nil")
+			}
+		})
+	}
+}
+
+func TestSubscribeEventValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		events string
+		valid  bool
+	}{
+		{"presence", `["presence"]`, true},
+		{"state", `["state"]`, true},
+		{"current", `["current"]`, true},
+		{"mixed valid", `["presence","state","current"]`, true},
+		{"unknown event", `["foo"]`, false},
+		{"empty array", `[]`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := []byte(`{"type":"subscribe","events":` + tt.events + `}`)
+			var msg ClientMessage
+			err := msg.UnmarshalJSON(data)
+			if tt.valid && err != nil {
+				t.Errorf("expected valid, got error: %v", err)
+			}
+			if !tt.valid && err == nil {
+				t.Error("expected error for invalid events, got nil")
 			}
 		})
 	}

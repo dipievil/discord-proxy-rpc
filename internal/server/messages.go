@@ -25,9 +25,10 @@ const (
 )
 
 type ServerMessage struct {
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload,omitempty"`
-	Status  ConnectionState `json:"status,omitempty"`
+	Type     string          `json:"type"`
+	Payload  json.RawMessage `json:"payload,omitempty"`
+	Status   ConnectionState `json:"status,omitempty"`
+	ClientID string          `json:"client_id,omitempty"`
 }
 
 func (m *ServerMessage) UnmarshalJSON(data []byte) error {
@@ -49,6 +50,11 @@ func (m *ServerMessage) UnmarshalJSON(data []byte) error {
 		if m.Status == "" {
 			return errors.New("message type \"state\" requires status")
 		}
+		switch m.Status {
+		case StateConnected, StateDisconnected, StateReconnecting:
+		default:
+			return fmt.Errorf("unknown connection state: %q", m.Status)
+		}
 	case "":
 		return errors.New("message type is required")
 	default:
@@ -67,7 +73,7 @@ func (e SubscribeEvents) MarshalJSON() ([]byte, error) {
 }
 
 type ClientMessage struct {
-	Type           string          `json:"type"`
+	Type            string          `json:"type"`
 	SubscribeEvents SubscribeEvents `json:"events,omitempty"`
 }
 
@@ -86,6 +92,13 @@ func (m *ClientMessage) UnmarshalJSON(data []byte) error {
 		if len(m.SubscribeEvents) == 0 {
 			return errors.New("message type \"subscribe\" requires events")
 		}
+		for _, e := range m.SubscribeEvents {
+			switch e {
+			case MsgTypePresence, MsgTypeState, MsgTypeCurrent:
+			default:
+				return fmt.Errorf("unknown event type: %q", e)
+			}
+		}
 	case MsgTypeGetCurrent:
 	case "":
 		return errors.New("message type is required")
@@ -103,8 +116,12 @@ func NewPresenceMessage(activity types.Activity) (ServerMessage, error) {
 	return ServerMessage{Type: MsgTypePresence, Payload: payload}, nil
 }
 
-func NewStateMessage(status ConnectionState) ServerMessage {
-	return ServerMessage{Type: MsgTypeState, Status: status}
+func NewStateMessage(status ConnectionState, clientID ...string) ServerMessage {
+	msg := ServerMessage{Type: MsgTypeState, Status: status}
+	if len(clientID) > 0 {
+		msg.ClientID = clientID[0]
+	}
+	return msg
 }
 
 func NewCurrentMessage(activity types.Activity) (ServerMessage, error) {
@@ -115,8 +132,11 @@ func NewCurrentMessage(activity types.Activity) (ServerMessage, error) {
 	return ServerMessage{Type: MsgTypeCurrent, Payload: payload}, nil
 }
 
-func NewSubscribeMessage(events []string) ClientMessage {
-	return ClientMessage{Type: MsgTypeSubscribe, SubscribeEvents: events}
+func NewSubscribeMessage(events []string) (ClientMessage, error) {
+	if len(events) == 0 {
+		return ClientMessage{}, errors.New("subscribe requires at least one event")
+	}
+	return ClientMessage{Type: MsgTypeSubscribe, SubscribeEvents: events}, nil
 }
 
 func NewGetCurrentMessage() ClientMessage {
