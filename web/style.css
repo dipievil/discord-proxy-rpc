@@ -1,6 +1,5 @@
 :root {
     --bg: #1a1a2e;
-    --bg-secondary: #16213e;
     --fg: #e0e0e0;
     --fg-muted: #a0a0a0;
     --card-bg: #1e293b;
@@ -18,7 +17,6 @@
 @media (prefers-color-scheme: light) {
     :root {
         --bg: #f0f0f5;
-        --bg-secondary: #e0e0e8;
         --fg: #1a1a2e;
         --fg-muted: #666;
         --card-bg: #ffffff;
@@ -151,7 +149,7 @@ main {
 .field .value {
     font-weight: 400;
     text-align: right;
-    word-break: break-word;
+    overflow-wrap: break-word;
 }
 
 .field-group {
@@ -259,6 +257,16 @@ main {
     outline-offset: 2px;
 }
 
+@media (prefers-reduced-motion: reduce) {
+    .status.connected .status-dot {
+        animation: none;
+    }
+
+    .toast {
+        animation: none;
+    }
+}
+
 @media (max-width: 480px) {
     header {
         padding: 0.75rem 1rem;
@@ -294,5 +302,37 @@ main {
     .toast {
         bottom: 3.5rem;
         right: 1rem;
+    }
+}
+
+@media (max-width: 400px) {
+    header {
+        padding: 0.5rem 0.75rem;
+    }
+
+    header h1 {
+        font-size: 1rem;
+    }
+
+    main {
+        padding: 0.75rem;
+        gap: 0.75rem;
+    }
+
+    .card {
+        padding: 0.75rem;
+    }
+
+    .assets-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .copy-btn {
+        right: 0.75rem;
+        padding: 0.5rem 1rem;
+    }
+
+    .toast {
+        right: 0.75rem;
     }
 }
