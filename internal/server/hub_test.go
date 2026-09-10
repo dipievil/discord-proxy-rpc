@@ -162,6 +162,73 @@ func TestHubBroadcastFiltered(t *testing.T) {
 	}
 }
 
+func TestHubBroadcastStateInjectsClientID(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	hub.ClientID = "test-client-id"
+
+	conn := newMockConn(t)
+	client := NewClient(conn, hub)
+	client.subscribe(MsgTypeState)
+	hub.Register(client)
+	go client.WritePump()
+
+	time.Sleep(50 * time.Millisecond)
+
+	stateMsg := NewStateMessage(StateConnected)
+	hub.Broadcast(stateMsg)
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+
+	var received ServerMessage
+	if err := json.Unmarshal(data, &received); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if received.Type != MsgTypeState {
+		t.Errorf("type = %q, want %q", received.Type, MsgTypeState)
+	}
+	if received.ClientID != "test-client-id" {
+		t.Errorf("ClientID = %q, want %q", received.ClientID, "test-client-id")
+	}
+}
+
+func TestHubBroadcastStateKeepsExplicitClientID(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	hub.ClientID = "hub-client-id"
+
+	conn := newMockConn(t)
+	client := NewClient(conn, hub)
+	client.subscribe(MsgTypeState)
+	hub.Register(client)
+	go client.WritePump()
+
+	time.Sleep(50 * time.Millisecond)
+
+	stateMsg := NewStateMessage(StateConnected, "explicit-client-id")
+	hub.Broadcast(stateMsg)
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+
+	var received ServerMessage
+	if err := json.Unmarshal(data, &received); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if received.ClientID != "explicit-client-id" {
+		t.Errorf("ClientID = %q, want %q", received.ClientID, "explicit-client-id")
+	}
+}
+
 func TestHubClientCount(t *testing.T) {
 	hub, cancel := newTestHub(t)
 	defer cancel()
