@@ -1,20 +1,32 @@
 (function () {
     'use strict';
 
-    var WS_RECONNECT_BASE = 1000;
-    var WS_RECONNECT_MAX = 30000;
-    var TIMESTAMP_INTERVAL = 1000;
+    const WS_RECONNECT_BASE = 1000;
+    const WS_RECONNECT_MAX = 30000;
+    const TIMESTAMP_INTERVAL = 1000;
 
-    var ws = null;
-    var reconnectDelay = WS_RECONNECT_BASE;
-    var reconnectTimer = null;
-    var timestampTimer = null;
-    var currentActivity = null;
-    var clientId = null;
+    const ACTIVITY_TYPE_LABELS = {
+        0: 'Playing',
+        1: 'Streaming',
+        2: 'Listening',
+        3: 'Watching',
+        4: 'Custom',
+        5: 'Competing'
+    };
+
+    const DISCORD_CDN_HOST = 'cdn.discordapp.com';
+
+    let ws = null;
+    let reconnectDelay = WS_RECONNECT_BASE;
+    let reconnectTimer = null;
+    let timestampTimer = null;
+    let currentActivity = null;
+    let clientId = null;
+    let toastTimer = null;
 
     function connect() {
-        var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        var url = protocol + '//' + location.host + '/ws';
+        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const url = protocol + '//' + location.host + '/ws';
 
         try {
             ws = new WebSocket(url);
@@ -37,7 +49,7 @@
 
         ws.onmessage = function (event) {
             try {
-                var msg = JSON.parse(event.data);
+                const msg = JSON.parse(event.data);
                 handleMessage(msg);
             } catch (e) {
                 console.error('[Dashboard] Failed to parse message:', e);
@@ -72,6 +84,9 @@
                 break;
             case 'state':
                 updateConnectionStatus(msg.status);
+                if (msg.client_id) {
+                    clientId = msg.client_id;
+                }
                 break;
             default:
                 console.warn('[Dashboard] Unknown message type:', msg.type);
@@ -121,23 +136,38 @@
     }
 
     function renderImage(elementId, imageId) {
-        var img = document.getElementById(elementId);
+        const img = document.getElementById(elementId);
         if (!img || !imageId) {
             if (img) img.hidden = true;
             return;
         }
 
-        if (imageId.indexOf('http') === 0) {
-            img.src = imageId;
+        let src = null;
+
+        if (isSafeImageUrl(imageId)) {
+            src = imageId;
         } else if (clientId) {
-            img.src = 'https://cdn.discordapp.com/app-assets/' + clientId + '/' + imageId + '.png';
-        } else {
+            src = 'https://' + DISCORD_CDN_HOST + '/app-assets/' + clientId + '/' + imageId + '.png';
+        }
+
+        if (!src) {
             img.hidden = true;
             return;
         }
 
+        img.src = src;
         img.hidden = false;
         img.onerror = function () { img.hidden = true; };
+    }
+
+    function isSafeImageUrl(url) {
+        try {
+            const u = new URL(url);
+            return (u.protocol === 'https:' || u.protocol === 'http:') &&
+                u.hostname === DISCORD_CDN_HOST;
+        } catch (e) {
+            return false;
+        }
     }
 
     function startTimestampTimer(timestamps) {
@@ -156,15 +186,18 @@
     }
 
     function updateTimestamps(timestamps) {
-        var now = Math.floor(Date.now() / 1000);
+        const now = Math.floor(Date.now() / 1000);
+
+        setText('elapsed', '\u2014');
+        setText('remaining', '\u2014');
 
         if (timestamps.start) {
-            var elapsed = now - timestamps.start;
-            setText('elapsed', formatDuration(elapsed));
+            const elapsed = now - timestamps.start;
+            setText('elapsed', elapsed < 0 ? '\u2014' : formatDuration(elapsed));
         }
 
         if (timestamps.end) {
-            var remaining = timestamps.end - now;
+            const remaining = timestamps.end - now;
             if (remaining <= 0) {
                 setText('remaining', 'Ended');
             } else {
@@ -175,41 +208,59 @@
 
     function formatDuration(seconds) {
         if (seconds < 0) seconds = 0;
-        var h = Math.floor(seconds / 3600);
-        var m = Math.floor((seconds % 3600) / 60);
-        var s = seconds % 60;
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = seconds % 60;
         if (h > 0) return h + 'h ' + m + 'm ' + s + 's';
         if (m > 0) return m + 'm ' + s + 's';
         return s + 's';
     }
 
     function renderButtons(buttons) {
-        var list = document.getElementById('buttons-list');
+        const list = document.getElementById('buttons-list');
         if (!list) return;
 
+        list.textContent = '';
+
         if (!buttons || buttons.length === 0) {
-            list.innerHTML = '<li class="empty">No buttons</li>';
+            const empty = document.createElement('li');
+            empty.className = 'empty';
+            empty.textContent = 'No buttons';
+            list.appendChild(empty);
             return;
         }
-        list.innerHTML = buttons.map(function (b) {
-            return '<li><a href="' + escapeHtml(b.url) + '" target="_blank" rel="noopener">' + escapeHtml(b.label) + '</a></li>';
-        }).join('');
+
+        buttons.forEach(function (b) {
+            if (!isSafeUrl(b.url)) return;
+
+            const li = document.createElement('li');
+            const a = document.createElement('a');
+            a.href = b.url;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            a.textContent = b.label;
+            li.appendChild(a);
+            list.appendChild(li);
+        });
     }
 
-    function escapeHtml(str) {
-        var div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+    function isSafeUrl(url) {
+        try {
+            const u = new URL(url, window.location.href);
+            return u.protocol === 'http:' || u.protocol === 'https:';
+        } catch (e) {
+            return false;
+        }
     }
 
     function setText(fieldId, text) {
-        var el = document.querySelector('[data-field="' + fieldId + '"]');
+        const el = document.querySelector('[data-field="' + fieldId + '"]');
         if (el) el.textContent = text;
     }
 
     function updateConnectionStatus(status) {
-        var el = document.getElementById('status');
-        var text = document.getElementById('status-text');
+        const el = document.getElementById('status');
+        const text = document.getElementById('status-text');
         if (!el || !text) return;
 
         el.className = 'status ' + status;
@@ -217,18 +268,17 @@
     }
 
     function activityTypeLabel(type) {
-        var labels = { 0: 'Playing', 1: 'Streaming', 2: 'Listening', 3: 'Watching', 4: 'Custom', 5: 'Competing' };
-        return labels[type] || 'Unknown';
+        return ACTIVITY_TYPE_LABELS[type] || 'Unknown';
     }
 
     function setupCopyJson() {
-        var btn = document.getElementById('copy-json');
+        const btn = document.getElementById('copy-json');
         if (!btn) return;
 
         btn.addEventListener('click', function () {
             if (!currentActivity) return;
 
-            var json = JSON.stringify(currentActivity, null, 2);
+            const json = JSON.stringify(currentActivity, null, 2);
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(json).then(function () {
                     showToast('Copied!');
@@ -242,7 +292,7 @@
     }
 
     function fallbackCopy(text) {
-        var ta = document.createElement('textarea');
+        const ta = document.createElement('textarea');
         ta.value = text;
         ta.style.position = 'fixed';
         ta.style.left = '-9999px';
@@ -258,11 +308,12 @@
     }
 
     function showToast(message) {
-        var toast = document.getElementById('toast');
+        const toast = document.getElementById('toast');
         if (!toast) return;
         toast.textContent = message;
         toast.hidden = false;
-        setTimeout(function () { toast.hidden = true; }, 2000);
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(function () { toast.hidden = true; }, 2000);
     }
 
     function init() {

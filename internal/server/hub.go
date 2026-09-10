@@ -38,6 +38,7 @@ type Hub struct {
 	broadcast          chan ServerMessage
 	logger             *zap.Logger
 	done               chan struct{}
+	ClientID           string
 	GetCurrentPresence func() types.Activity
 }
 
@@ -82,6 +83,9 @@ func (h *Hub) Run(ctx context.Context) {
 			h.mu.Unlock()
 			h.logger.Info("client unregistered", zap.String("id", client.id), zap.Int("total", h.ClientCount()))
 		case msg := <-h.broadcast:
+			if msg.Type == MsgTypeState && msg.ClientID == "" {
+				msg.ClientID = h.ClientID
+			}
 			data, err := json.Marshal(msg)
 			if err != nil {
 				h.logger.Error("failed to marshal broadcast message", zap.Error(err))
