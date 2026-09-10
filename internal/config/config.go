@@ -102,6 +102,10 @@ func setupEnv(v *viper.Viper) {
 	_ = v.BindEnv("auth.enabled", "PROXY_AUTH_ENABLED")
 	_ = v.BindEnv("auth.token", "PROXY_AUTH_TOKEN")
 
+	if token := os.Getenv("PROXY_TOKEN"); token != "" {
+		v.Set("auth.token", token)
+	}
+
 	_ = v.BindEnv("mdns.enabled", "PROXY_MDNS_ENABLED")
 	_ = v.BindEnv("mdns.instance_name", "PROXY_MDNS_INSTANCE_NAME")
 	_ = v.BindEnv("mdns.service_type", "PROXY_MDNS_SERVICE_TYPE")
