@@ -137,8 +137,15 @@
 
     function renderImage(elementId, imageId) {
         const img = document.getElementById(elementId);
-        if (!img || !imageId) {
-            if (img) img.hidden = true;
+        if (!img) return;
+
+        const placeholder = img.nextElementSibling;
+
+        if (!imageId) {
+            img.hidden = true;
+            if (placeholder && placeholder.classList.contains('asset-placeholder')) {
+                placeholder.hidden = false;
+            }
             return;
         }
 
@@ -152,12 +159,23 @@
 
         if (!src) {
             img.hidden = true;
+            if (placeholder && placeholder.classList.contains('asset-placeholder')) {
+                placeholder.hidden = false;
+            }
             return;
         }
 
         img.src = src;
         img.hidden = false;
-        img.onerror = function () { img.hidden = true; };
+        if (placeholder && placeholder.classList.contains('asset-placeholder')) {
+            placeholder.hidden = true;
+        }
+        img.onerror = function () {
+            img.hidden = true;
+            if (placeholder && placeholder.classList.contains('asset-placeholder')) {
+                placeholder.hidden = false;
+            }
+        };
     }
 
     function isSafeImageUrl(url) {
@@ -316,8 +334,29 @@
         toastTimer = setTimeout(function () { toast.hidden = true; }, 2000);
     }
 
+    function setupKeyboardShortcut() {
+        document.addEventListener('keydown', function (e) {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === 'KeyC') {
+                e.preventDefault();
+                if (!currentActivity) return;
+
+                var json = JSON.stringify(currentActivity, null, 2);
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(json).then(function () {
+                        showToast('Copied!');
+                    }).catch(function () {
+                        fallbackCopy(json);
+                    });
+                } else {
+                    fallbackCopy(json);
+                }
+            }
+        });
+    }
+
     function init() {
         setupCopyJson();
+        setupKeyboardShortcut();
         connect();
     }
 
