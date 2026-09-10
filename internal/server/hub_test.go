@@ -480,3 +480,31 @@ func TestHubClose(t *testing.T) {
 		t.Fatalf("ClientCount after Close = %d, want 0", count)
 	}
 }
+
+func TestHubCloseConcurrentWithContextCancel(t *testing.T) {
+	logger := zap.NewNop()
+
+	for i := 0; i < 50; i++ {
+		hub := NewHub(logger)
+		ctx, cancel := context.WithCancel(context.Background())
+		go hub.Run(ctx)
+
+		conn := newMockConn(t)
+		client := NewClient(conn, hub)
+		hub.Register(client)
+
+		time.Sleep(5 * time.Millisecond)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			hub.Close()
+		}()
+		go func() {
+			defer wg.Done()
+			cancel()
+		}()
+		wg.Wait()
+	}
+}
