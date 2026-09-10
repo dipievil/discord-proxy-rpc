@@ -83,7 +83,7 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
 
 ```json
 { "type": "presence", "payload": { /* Activity object */ } }
-{ "type": "state", "status": "connected|disconnected|reconnecting" }
+{ "type": "state", "status": "connected|disconnected|reconnecting", "client_id": "optional Discord App ID" }
 { "type": "current", "payload": { /* Activity object */ } }
 ```
 

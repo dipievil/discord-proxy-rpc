@@ -1,5 +1,6 @@
 :root {
     --bg: #1a1a2e;
+    --bg-secondary: #16213e;
     --fg: #e0e0e0;
     --fg-muted: #a0a0a0;
     --card-bg: #1e293b;
@@ -17,6 +18,7 @@
 @media (prefers-color-scheme: light) {
     :root {
         --bg: #f0f0f5;
+        --bg-secondary: #e0e0e8;
         --fg: #1a1a2e;
         --fg-muted: #666;
         --card-bg: #ffffff;
@@ -119,6 +121,11 @@ main {
     animation: pulse 2s ease-in-out infinite;
 }
 
+.status.reconnecting .status-dot {
+    background: #faa61a;
+    animation: pulse 1s ease-in-out infinite;
+}
+
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
@@ -150,6 +157,7 @@ main {
     font-weight: 400;
     text-align: right;
     overflow-wrap: break-word;
+    word-break: break-word;
 }
 
 .field-group {
@@ -256,6 +264,7 @@ main {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
+
 
 @media (prefers-reduced-motion: reduce) {
     .status.connected .status-dot {
