@@ -25,9 +25,10 @@ const (
 )
 
 type ServerMessage struct {
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload,omitempty"`
-	Status  ConnectionState `json:"status,omitempty"`
+	Type     string          `json:"type"`
+	Payload  json.RawMessage `json:"payload,omitempty"`
+	Status   ConnectionState `json:"status,omitempty"`
+	ClientID string          `json:"client_id,omitempty"`
 }
 
 func (m *ServerMessage) UnmarshalJSON(data []byte) error {
@@ -115,8 +116,12 @@ func NewPresenceMessage(activity types.Activity) (ServerMessage, error) {
 	return ServerMessage{Type: MsgTypePresence, Payload: payload}, nil
 }
 
-func NewStateMessage(status ConnectionState) ServerMessage {
-	return ServerMessage{Type: MsgTypeState, Status: status}
+func NewStateMessage(status ConnectionState, clientID ...string) ServerMessage {
+	msg := ServerMessage{Type: MsgTypeState, Status: status}
+	if len(clientID) > 0 {
+		msg.ClientID = clientID[0]
+	}
+	return msg
 }
 
 func NewCurrentMessage(activity types.Activity) (ServerMessage, error) {

@@ -16,7 +16,7 @@ server:
 
 auth:
   enabled: false
-  token: ""                  # override via PROXY_AUTH_TOKEN env
+  token: ""                  # override via PROXY_TOKEN env
 
 mdns:
   enabled: true

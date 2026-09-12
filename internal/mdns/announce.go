@@ -1,5 +1,3 @@
-// Package mdns implements mDNS/DNS-SD service advertisement for LAN
-// discovery using github.com/grandcat/zeroconf.
 package mdns
 
 import (
@@ -19,8 +17,8 @@ const (
 	txtAPIVersion      = "v=1"
 )
 
-// Advertiser registers the proxy service on the LAN via mDNS/DNS-SD so
-// that clients can discover it automatically.
+var hostnameFunc = os.Hostname
+
 type Advertiser struct {
 	server *zeroconf.Server
 	cfg    config.MdnsConfig
@@ -28,8 +26,6 @@ type Advertiser struct {
 	logger *zap.Logger
 }
 
-// NewAdvertiser creates an Advertiser. It validates the port and applies
-// defaults for missing fields in cfg.
 func NewAdvertiser(cfg config.MdnsConfig, port int, logger *zap.Logger) (*Advertiser, error) {
 	if port <= 0 || port > 65535 {
 		return nil, fmt.Errorf("mdns: invalid port %d", port)
@@ -44,9 +40,14 @@ func NewAdvertiser(cfg config.MdnsConfig, port int, logger *zap.Logger) (*Advert
 	}, nil
 }
 
-// Advertise registers the service with mDNS. It blocks until the
-// registration is sent.
+func (a *Advertiser) IsEnabled() bool {
+	return a.cfg.Enabled
+}
+
 func (a *Advertiser) Advertise() error {
+	if !a.cfg.Enabled {
+		return nil
+	}
 	if a.server != nil {
 		return fmt.Errorf("mdns: already advertising")
 	}
@@ -74,8 +75,6 @@ func (a *Advertiser) Advertise() error {
 	return nil
 }
 
-// Shutdown deregisters the mDNS service and releases resources. It is safe
-// to call multiple times or before Advertise.
 func (a *Advertiser) Shutdown() error {
 	if a.server == nil {
 		return nil
@@ -90,7 +89,7 @@ func (a *Advertiser) resolveInstanceName() string {
 	if a.cfg.InstanceName != "" {
 		return a.cfg.InstanceName
 	}
-	if h, err := os.Hostname(); err == nil && h != "" {
+	if h, err := hostnameFunc(); err == nil && h != "" {
 		return h
 	}
 	return fallbackName
