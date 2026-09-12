@@ -91,6 +91,8 @@ discord-proxy-rpc is a single-binary Go application that runs on the same machin
 
 ## Quick Start
 
+> **Status: under development.** The core libraries (IPC client, state machine, LAN server, mDNS, dashboard) are implemented and tested, but the application startup wiring that launches the full server is not merged yet. The quick-start options below become usable once that wiring lands.
+
 ### Option 1: Download a release
 
 1. Download the latest binary for your platform from [Releases](https://github.com/discord-proxy-rpc/discord-proxy-rpc/releases).
@@ -107,23 +109,11 @@ discord-proxy-rpc is a single-binary Go application that runs on the same machin
 
 ### Option 2: Docker
 
-```bash
-docker run -d \
-  -e PROXY_DISCORD_CLIENT_ID=YOUR_DISCORD_APP_ID \
-  -p 8765:8765 \
-  ghcr.io/discord-proxy-rpc/discord-proxy-rpc:latest
-```
-
-Note: The Docker container must share the host's IPC namespace to reach Discord sockets:
-```bash
-docker run -d \
-  --ipc=host \
-  -e PROXY_DISCORD_CLIENT_ID=YOUR_DISCORD_APP_ID \
-  -p 8765:8765 \
-  ghcr.io/discord-proxy-rpc/discord-proxy-rpc:latest
-```
+> **Status: not yet available.** There is no Dockerfile in the repository yet. Docker packaging is planned but not implemented; the instructions below are deferred until a container image is published.
 
 ### Option 3: Build from source
+
+> **Status: not yet available.** The full startup wiring (IPC client + HTTP server) is still in progress; the binary built today only advertises the mDNS service and does not yet serve the dashboard or listen on port 8765. Follow this path once the startup wiring is merged.
 
 ```bash
 git clone https://github.com/discord-proxy-rpc/discord-proxy-rpc.git
@@ -272,7 +262,7 @@ mDNS auto-discovery works out of the box on most networks. On Linux, ensure Avah
 
 ### WebSocket Protocol
 
-Connect to `ws://<host>:<host>:<host>:<host>:8765/ws` (or your configured `ws_path`).
+Connect to `ws://<host>:8765/ws` (or your configured `ws_path`).
 
 **Authentication (if enabled):**
 
@@ -378,9 +368,7 @@ Releases are automated via GitHub Actions + GoReleaser:
 
 ### Docker build
 
-```bash
-docker build -t discord-proxy-rpc .
-```
+> **Status: not yet available.** No Dockerfile is present in the repository yet. A container image will be published once Docker packaging is added.
 
 ---
 
