@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,7 +28,7 @@ func newIntegrationServer(t *testing.T, opts ...ServerOption) (*Hub, *httptest.S
 
 func integrationDial(t *testing.T, ts *httptest.Server) *websocket.Conn {
 	t.Helper()
-	wsURL := "ws" + ts.URL[4:]
+	wsURL := "ws" + ts.URL[4:] + "/ws"
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -212,9 +213,12 @@ func TestAuthMiddlewareIntegration(t *testing.T) {
 			ts := httptest.NewServer(srv)
 			defer ts.Close()
 
-			wsURL := "ws" + ts.URL[4:]
+			wsURL := "ws" + ts.URL[4:] + "/ws"
 			req, _ := http.NewRequest("GET", wsURL, nil)
-			if tt.name == "wrong bearer token rejected" {
+			switch tt.name {
+			case "valid bearer token accepted":
+				req.Header.Set("Authorization", "Bearer "+validToken)
+			case "wrong bearer token rejected":
 				req.Header.Set("Authorization", "Bearer wrong-token")
 			}
 
@@ -225,11 +229,11 @@ func TestAuthMiddlewareIntegration(t *testing.T) {
 				if err != nil {
 					t.Fatalf("expected WS success, got error: %v", err)
 				}
-				conn.Close()
 				time.Sleep(50 * time.Millisecond)
 				if hub.ClientCount() != 1 {
 					t.Errorf("ClientCount = %d, want 1", hub.ClientCount())
 				}
+				conn.Close()
 			} else {
 				if err == nil {
 					conn.Close()
@@ -309,16 +313,17 @@ func TestRESTEndpointsIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("CORS preflight returns 204", func(t *testing.T) {
-		req, _ := http.NewRequest("OPTIONS", ts.URL+"/api/presence", nil)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("request: %v", err)
-		}
-		defer resp.Body.Close()
+	t.Run("no wildcard CORS headers", func(t *testing.T) {
+		for _, ep := range []string{"/health", "/api/presence", "/api/state"} {
+			resp, err := http.Get(ts.URL + ep)
+			if err != nil {
+				t.Fatalf("request %s: %v", ep, err)
+			}
+			resp.Body.Close()
 
-		if resp.StatusCode != http.StatusNoContent {
-			t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+			if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+				t.Errorf("%s: ACAO = %q, want empty (no wildcard CORS)", ep, got)
+			}
 		}
 	})
 
@@ -331,23 +336,6 @@ func TestRESTEndpointsIntegration(t *testing.T) {
 
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
-		}
-	})
-
-	t.Run("CORS headers on all endpoints", func(t *testing.T) {
-		for _, ep := range []string{"/health", "/api/presence", "/api/state"} {
-			resp, err := http.Get(ts.URL + ep)
-			if err != nil {
-				t.Fatalf("request %s: %v", ep, err)
-			}
-			resp.Body.Close()
-
-			if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
-				t.Errorf("%s: ACAO = %q, want %q", ep, got, "*")
-			}
-			if got := resp.Header.Get("Access-Control-Allow-Methods"); got != "GET, OPTIONS" {
-				t.Errorf("%s: ACAM = %q, want %q", ep, got, "GET, OPTIONS")
-			}
 		}
 	})
 }
@@ -371,7 +359,9 @@ func TestDashboardServingIntegration(t *testing.T) {
 	}
 
 	var body strings.Builder
-	body.ReadFrom(resp.Body)
+	if _, err := io.Copy(&body, resp.Body); err != nil {
+		t.Fatalf("read dashboard body: %v", err)
+	}
 	content := body.String()
 
 	required := []string{"Discord Proxy RPC", "presence-card", "connection-card", "noscript"}
@@ -410,7 +400,8 @@ func TestConcurrentWSConnections(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	activity := types.Activity{Details: "Concurrent", Type: types.ActivityPlaying}
-	hub.Broadcast(NewPresenceMessage(activity))
+	presenceMsg, _ := NewPresenceMessage(activity)
+	hub.Broadcast(presenceMsg)
 	hub.Broadcast(NewStateMessage(StateConnected))
 
 	for i, conn := range conns {
@@ -545,14 +536,19 @@ func TestMixedRESTAndWS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("REST request: %v", err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("REST status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
 	var restActivity types.Activity
-	json.NewDecoder(resp.Body).Decode(&restActivity)
+	if err := json.NewDecoder(resp.Body).Decode(&restActivity); err != nil {
+		t.Fatalf("decode REST response: %v", err)
+	}
+	if restActivity.Details != "Mixed Test" {
+		t.Errorf("REST Details = %q, want %q", restActivity.Details, "Mixed Test")
+	}
 
 	integrationSubscribe(t, conn, []string{MsgTypePresence})
 
