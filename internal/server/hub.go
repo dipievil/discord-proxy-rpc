@@ -38,6 +38,8 @@ type Hub struct {
 	broadcast          chan ServerMessage
 	logger             *zap.Logger
 	done               chan struct{}
+	doneOnce           sync.Once
+	ClientID           string
 	GetCurrentPresence func() types.Activity
 }
 
@@ -53,13 +55,7 @@ func NewHub(logger *zap.Logger) *Hub {
 }
 
 func (h *Hub) Run(ctx context.Context) {
-	defer func() {
-		select {
-		case <-h.done:
-		default:
-			close(h.done)
-		}
-	}()
+	defer h.closeDone()
 
 	for {
 		select {
@@ -82,6 +78,9 @@ func (h *Hub) Run(ctx context.Context) {
 			h.mu.Unlock()
 			h.logger.Info("client unregistered", zap.String("id", client.id), zap.Int("total", h.ClientCount()))
 		case msg := <-h.broadcast:
+			if msg.Type == MsgTypeState && msg.ClientID == "" {
+				msg.ClientID = h.ClientID
+			}
 			data, err := json.Marshal(msg)
 			if err != nil {
 				h.logger.Error("failed to marshal broadcast message", zap.Error(err))
@@ -135,11 +134,13 @@ func (h *Hub) ClientCount() int {
 
 func (h *Hub) Close() {
 	h.closeAllClients()
-	select {
-	case <-h.done:
-	default:
+	h.closeDone()
+}
+
+func (h *Hub) closeDone() {
+	h.doneOnce.Do(func() {
 		close(h.done)
-	}
+	})
 }
 
 func (h *Hub) closeAllClients() {

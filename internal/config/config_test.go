@@ -168,6 +168,39 @@ func TestEnvVarOverrides(t *testing.T) {
 	}
 }
 
+func TestProxyTokenEnvVar(t *testing.T) {
+	t.Setenv("PROXY_TOKEN", "proxy-secret-token")
+
+	v := newViperWithDefaults(t)
+	setupEnv(v)
+
+	var cfg Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if cfg.Auth.Token != "proxy-secret-token" {
+		t.Errorf("auth.token = %q, want %q", cfg.Auth.Token, "proxy-secret-token")
+	}
+}
+
+func TestProxyTokenOverridesProxyAuthToken(t *testing.T) {
+	t.Setenv("PROXY_TOKEN", "primary-token")
+	t.Setenv("PROXY_AUTH_TOKEN", "secondary-token")
+
+	v := newViperWithDefaults(t)
+	setupEnv(v)
+
+	var cfg Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if cfg.Auth.Token != "primary-token" {
+		t.Errorf("auth.token = %q, want %q", cfg.Auth.Token, "primary-token")
+	}
+}
+
 func TestSetupLoggerJSON(t *testing.T) {
 	logger, err := SetupLogger("info", "json")
 	if err != nil {
