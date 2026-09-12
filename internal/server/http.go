@@ -15,6 +15,7 @@ type Server struct {
 	hub                *Hub
 	logger             *zap.Logger
 	wsHandler          *WSHandler
+	wsPath             string
 	getCurrentPresence func() types.Activity
 	getIPCState        func() string
 }
@@ -39,11 +40,20 @@ func WithAuth(authFunc func(r *http.Request) bool) ServerOption {
 	}
 }
 
+func WithWSPath(path string) ServerOption {
+	return func(s *Server) {
+		if path != "" {
+			s.wsPath = path
+		}
+	}
+}
+
 func NewServer(hub *Hub, logger *zap.Logger, opts ...ServerOption) *Server {
 	s := &Server{
 		mux:                http.NewServeMux(),
 		hub:                hub,
 		logger:             logger,
+		wsPath:             "/ws",
 		getCurrentPresence: func() types.Activity { return types.Activity{} },
 		getIPCState:        func() string { return string(StateDisconnected) },
 	}
@@ -54,28 +64,21 @@ func NewServer(hub *Hub, logger *zap.Logger, opts ...ServerOption) *Server {
 		opt(s)
 	}
 
+	s.hub.GetCurrentPresence = s.getCurrentPresence
+
 	s.registerRoutes()
 	return s
 }
 
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/", s.handleDashboard)
-	s.mux.HandleFunc("/ws", s.wsHandler.ServeHTTP)
+	s.mux.HandleFunc(s.wsPath, s.wsHandler.ServeHTTP)
 	s.mux.HandleFunc("/api/presence", s.handlePresence)
 	s.mux.HandleFunc("/api/state", s.handleState)
 	s.mux.HandleFunc("/health", s.handleHealth)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
 	s.mux.ServeHTTP(w, r)
 }
 

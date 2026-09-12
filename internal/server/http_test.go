@@ -183,7 +183,7 @@ func TestDashboardServing(t *testing.T) {
 	}
 }
 
-func TestCORSHeaders(t *testing.T) {
+func TestNoWildcardCORSHeaders(t *testing.T) {
 	_, ts, _, cleanup := newTestHTTPServer(t)
 	defer cleanup()
 
@@ -193,34 +193,12 @@ func TestCORSHeaders(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "*")
-	}
-	if got := resp.Header.Get("Access-Control-Allow-Methods"); got != "GET, OPTIONS" {
-		t.Errorf("Access-Control-Allow-Methods = %q, want %q", got, "GET, OPTIONS")
-	}
-	if got := resp.Header.Get("Access-Control-Allow-Headers"); got != "Content-Type" {
-		t.Errorf("Access-Control-Allow-Headers = %q, want %q", got, "Content-Type")
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want empty (no wildcard CORS)", got)
 	}
 }
 
-func TestCORSOptions(t *testing.T) {
-	_, ts, _, cleanup := newTestHTTPServer(t)
-	defer cleanup()
-
-	req, _ := http.NewRequest("OPTIONS", ts.URL+"/api/presence", nil)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusNoContent {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
-	}
-}
-
-func TestCORSHeadersOnAllEndpoints(t *testing.T) {
+func TestNoCORSHeadersOnAllEndpoints(t *testing.T) {
 	_, ts, _, cleanup := newTestHTTPServer(t)
 	defer cleanup()
 
@@ -232,8 +210,8 @@ func TestCORSHeadersOnAllEndpoints(t *testing.T) {
 		}
 		resp.Body.Close()
 
-		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
-			t.Errorf("%s: Access-Control-Allow-Origin = %q, want %q", ep, got, "*")
+		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+			t.Errorf("%s: Access-Control-Allow-Origin = %q, want empty (no wildcard CORS)", ep, got)
 		}
 	}
 }
@@ -246,7 +224,7 @@ func TestWSUpgradeViaServer(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	wsURL := "ws" + ts.URL[4:]
+	wsURL := "ws" + ts.URL[4:] + "/ws"
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -272,7 +250,7 @@ func TestWSAuthViaServer(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	wsURL := "ws" + ts.URL[4:]
+	wsURL := "ws" + ts.URL[4:] + "/ws"
 	_, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err == nil {
 		t.Fatal("expected dial error with auth rejection")
@@ -280,6 +258,106 @@ func TestWSAuthViaServer(t *testing.T) {
 
 	if count := hub.ClientCount(); count != 0 {
 		t.Errorf("ClientCount = %d, want 0 (auth rejected)", count)
+	}
+}
+
+func TestWSGetCurrentViaServer(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	activity := types.Activity{Details: "Server Wired Game", Type: types.ActivityPlaying}
+	srv := NewServer(hub, zap.NewNop(),
+		WithGetCurrentPresence(func() types.Activity { return activity }),
+	)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	wsURL := "ws" + ts.URL[4:] + "/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	getMsg := NewGetCurrentMessage()
+	data, _ := json.Marshal(getMsg)
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		t.Fatalf("WriteMessage: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, received, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+
+	var resp ServerMessage
+	if err := json.Unmarshal(received, &resp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if resp.Type != MsgTypeCurrent {
+		t.Errorf("type = %q, want %q", resp.Type, MsgTypeCurrent)
+	}
+
+	var got types.Activity
+	if err := json.Unmarshal(resp.Payload, &got); err != nil {
+		t.Fatalf("Unmarshal payload: %v", err)
+	}
+	if got.Details != "Server Wired Game" {
+		t.Errorf("Details = %q, want %q", got.Details, "Server Wired Game")
+	}
+}
+
+func TestWSCustomPathViaServer(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	srv := NewServer(hub, zap.NewNop(), WithWSPath("/custom-ws"))
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	wsURL := "ws" + ts.URL[4:] + "/custom-ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial custom ws path: %v", err)
+	}
+	defer conn.Close()
+
+	time.Sleep(50 * time.Millisecond)
+	if count := hub.ClientCount(); count != 1 {
+		t.Errorf("ClientCount = %d, want 1", count)
+	}
+
+	// Default /ws path should no longer be served.
+	_, _, err = websocket.DefaultDialer.Dial("ws"+ts.URL[4:]+"/ws", nil)
+	if err == nil {
+		t.Error("expected default /ws path to be disabled when custom path configured")
+	}
+}
+
+func TestWSRejectsCrossOriginViaServer(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	srv := NewServer(hub, zap.NewNop())
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	wsURL := "ws" + ts.URL[4:] + "/ws"
+	header := http.Header{}
+	header.Set("Origin", "http://evil.example.com")
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err == nil {
+		conn.Close()
+		t.Fatal("expected cross-origin WebSocket upgrade to be rejected")
+	}
+
+	if count := hub.ClientCount(); count != 0 {
+		t.Errorf("ClientCount = %d, want 0 (cross-origin rejected)", count)
 	}
 }
 
