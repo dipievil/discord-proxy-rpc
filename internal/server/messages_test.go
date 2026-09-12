@@ -83,6 +83,30 @@ func TestStateMessageRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStateMessageRoundTripWithClientID(t *testing.T) {
+	original := NewStateMessage(StateConnected, "123456789")
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var decoded ServerMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if decoded.Type != MsgTypeState {
+		t.Errorf("Type = %q, want %q", decoded.Type, MsgTypeState)
+	}
+	if decoded.Status != StateConnected {
+		t.Errorf("Status = %q, want %q", decoded.Status, StateConnected)
+	}
+	if decoded.ClientID != "123456789" {
+		t.Errorf("ClientID = %q, want %q", decoded.ClientID, "123456789")
+	}
+}
+
 func TestCurrentMessageRoundTrip(t *testing.T) {
 	activity := types.Activity{
 		Details: "Listening to Spotify",
@@ -362,6 +386,23 @@ func TestStateMessageOmitsPayload(t *testing.T) {
 	jsonStr := string(data)
 	if strings.Contains(jsonStr, "payload") {
 		t.Errorf("state message should not contain payload, got: %s", jsonStr)
+	}
+}
+
+func TestPresenceMessageOmitsClientID(t *testing.T) {
+	msg, err := NewPresenceMessage(types.Activity{Details: "test"})
+	if err != nil {
+		t.Fatalf("NewPresenceMessage: %v", err)
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	jsonStr := string(data)
+	if strings.Contains(jsonStr, "client_id") {
+		t.Errorf("presence message should not contain client_id, got: %s", jsonStr)
 	}
 }
 

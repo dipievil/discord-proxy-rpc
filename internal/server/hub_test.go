@@ -162,6 +162,73 @@ func TestHubBroadcastFiltered(t *testing.T) {
 	}
 }
 
+func TestHubBroadcastStateInjectsClientID(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	hub.ClientID = "test-client-id"
+
+	conn := newMockConn(t)
+	client := NewClient(conn, hub)
+	client.subscribe(MsgTypeState)
+	hub.Register(client)
+	go client.WritePump()
+
+	time.Sleep(50 * time.Millisecond)
+
+	stateMsg := NewStateMessage(StateConnected)
+	hub.Broadcast(stateMsg)
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+
+	var received ServerMessage
+	if err := json.Unmarshal(data, &received); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if received.Type != MsgTypeState {
+		t.Errorf("type = %q, want %q", received.Type, MsgTypeState)
+	}
+	if received.ClientID != "test-client-id" {
+		t.Errorf("ClientID = %q, want %q", received.ClientID, "test-client-id")
+	}
+}
+
+func TestHubBroadcastStateKeepsExplicitClientID(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	hub.ClientID = "hub-client-id"
+
+	conn := newMockConn(t)
+	client := NewClient(conn, hub)
+	client.subscribe(MsgTypeState)
+	hub.Register(client)
+	go client.WritePump()
+
+	time.Sleep(50 * time.Millisecond)
+
+	stateMsg := NewStateMessage(StateConnected, "explicit-client-id")
+	hub.Broadcast(stateMsg)
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+
+	var received ServerMessage
+	if err := json.Unmarshal(data, &received); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if received.ClientID != "explicit-client-id" {
+		t.Errorf("ClientID = %q, want %q", received.ClientID, "explicit-client-id")
+	}
+}
+
 func TestHubClientCount(t *testing.T) {
 	hub, cancel := newTestHub(t)
 	defer cancel()
@@ -510,5 +577,33 @@ func TestHubClose(t *testing.T) {
 
 	if count := hub.ClientCount(); count != 0 {
 		t.Fatalf("ClientCount after Close = %d, want 0", count)
+	}
+}
+
+func TestHubCloseConcurrentWithContextCancel(t *testing.T) {
+	logger := zap.NewNop()
+
+	for i := 0; i < 50; i++ {
+		hub := NewHub(logger)
+		ctx, cancel := context.WithCancel(context.Background())
+		go hub.Run(ctx)
+
+		conn := newMockConn(t)
+		client := NewClient(conn, hub)
+		hub.Register(client)
+
+		time.Sleep(5 * time.Millisecond)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			hub.Close()
+		}()
+		go func() {
+			defer wg.Done()
+			cancel()
+		}()
+		wg.Wait()
 	}
 }
