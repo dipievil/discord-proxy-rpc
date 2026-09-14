@@ -386,6 +386,51 @@ func TestWSCustomUpgrader(t *testing.T) {
 	}
 }
 
+func TestWSDefaultRejectsCrossOrigin(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	handler := NewWSHandler(hub, zap.NewNop())
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	h := http.Header{}
+	h.Set("Origin", "http://malicious.example.com")
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL(server), h)
+	if err == nil {
+		conn.Close()
+		t.Fatal("expected cross-origin request to be rejected")
+	}
+
+	if count := hub.ClientCount(); count != 0 {
+		t.Errorf("ClientCount = %d, want 0 (cross-origin rejected)", count)
+	}
+}
+
+func TestWSDefaultAcceptsSameOrigin(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	handler := NewWSHandler(hub, zap.NewNop())
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	h := http.Header{}
+	h.Set("Origin", server.URL)
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL(server), h)
+	if err != nil {
+		t.Fatalf("dial same-origin: %v", err)
+	}
+	defer conn.Close()
+
+	time.Sleep(50 * time.Millisecond)
+	if count := hub.ClientCount(); count != 1 {
+		t.Errorf("ClientCount = %d, want 1", count)
+	}
+}
+
 func TestWSInvalidUpgradeReturnsError(t *testing.T) {
 	hub, cancel := newTestHub(t)
 	defer cancel()
