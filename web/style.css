@@ -192,6 +192,17 @@ main {
     object-fit: contain;
 }
 
+.asset-placeholder {
+    color: var(--fg-muted);
+    font-size: 0.75rem;
+    font-style: italic;
+    opacity: 0.6;
+}
+
+.asset-placeholder[hidden] {
+    display: none;
+}
+
 .buttons-list {
     list-style: none;
     margin-top: 0.5rem;

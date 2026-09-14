@@ -137,27 +137,59 @@
 
     function renderImage(elementId, imageId) {
         const img = document.getElementById(elementId);
-        if (!img || !imageId) {
-            if (img) img.hidden = true;
-            return;
-        }
+        if (!img) return;
 
-        let src = null;
-
-        if (isSafeImageUrl(imageId)) {
-            src = imageId;
-        } else if (clientId) {
-            src = 'https://' + DISCORD_CDN_HOST + '/app-assets/' + clientId + '/' + imageId + '.png';
-        }
+        const placeholder = img.nextElementSibling;
+        const src = resolveAssetSrc(imageId, clientId);
 
         if (!src) {
-            img.hidden = true;
+            showAssetPlaceholder(img, placeholder);
             return;
         }
 
         img.src = src;
+        hideAssetPlaceholder(img, placeholder);
+        img.onerror = function () {
+            showAssetPlaceholder(img, placeholder);
+        };
+    }
+
+    function resolveAssetSrc(imageId, clientId) {
+        if (!imageId) return null;
+
+        if (isSafeImageUrl(imageId)) {
+            return imageId;
+        }
+
+        // Reject any URL-shaped value that is not a trusted CDN URL so it
+        // falls back to the placeholder instead of becoming an asset id.
+        if (isUrlLike(imageId)) {
+            return null;
+        }
+
+        if (clientId) {
+            return 'https://' + DISCORD_CDN_HOST + '/app-assets/' + clientId + '/' + imageId + '.png';
+        }
+
+        return null;
+    }
+
+    function isUrlLike(value) {
+        return /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+    }
+
+    function showAssetPlaceholder(img, placeholder) {
+        img.hidden = true;
+        if (placeholder && placeholder.classList.contains('asset-placeholder')) {
+            placeholder.hidden = false;
+        }
+    }
+
+    function hideAssetPlaceholder(img, placeholder) {
         img.hidden = false;
-        img.onerror = function () { img.hidden = true; };
+        if (placeholder && placeholder.classList.contains('asset-placeholder')) {
+            placeholder.hidden = true;
+        }
     }
 
     function isSafeImageUrl(url) {
@@ -316,8 +348,32 @@
         toastTimer = setTimeout(function () { toast.hidden = true; }, 2000);
     }
 
+    function isCopyShortcut(e) {
+        return (e.ctrlKey || e.metaKey) && e.altKey && e.code === 'KeyC';
+    }
+
+    function setupKeyboardShortcut() {
+        document.addEventListener('keydown', function (e) {
+            if (!isCopyShortcut(e)) return;
+            e.preventDefault();
+            if (!currentActivity) return;
+
+            var json = JSON.stringify(currentActivity, null, 2);
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(json).then(function () {
+                    showToast('Copied!');
+                }).catch(function () {
+                    fallbackCopy(json);
+                });
+            } else {
+                fallbackCopy(json);
+            }
+        });
+    }
+
     function init() {
         setupCopyJson();
+        setupKeyboardShortcut();
         connect();
     }
 
@@ -325,5 +381,15 @@
         document.addEventListener('DOMContentLoaded', init);
     } else {
         init();
+    }
+
+    // Expose pure helpers for automated testing (no-op in production).
+    if (typeof window !== 'undefined') {
+        window.__dashboard = {
+            isCopyShortcut: isCopyShortcut,
+            resolveAssetSrc: resolveAssetSrc,
+            isSafeImageUrl: isSafeImageUrl,
+            formatDuration: formatDuration
+        };
     }
 })();

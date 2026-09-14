@@ -3,6 +3,7 @@ module github.com/discord-proxy-rpc/discord-proxy-rpc
 go 1.26.5
 
 require (
+	github.com/dop251/goja v0.0.0-20241024094426-79f3a7efcdbd
 	github.com/dragsbruh/gopresence v0.0.0-20260104125204-049c09d5d051
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
