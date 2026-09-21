@@ -28,6 +28,7 @@ type Client struct {
 	hub        *Hub
 	mu         sync.Mutex
 	pingPeriod time.Duration
+	Done       chan struct{}
 }
 
 type Hub struct {
@@ -74,6 +75,7 @@ func (h *Hub) Run(ctx context.Context) {
 			if _, ok := h.clients[client.id]; ok {
 				delete(h.clients, client.id)
 				close(client.send)
+				close(client.Done)
 			}
 			h.mu.Unlock()
 			h.logger.Info("client unregistered", zap.String("id", client.id), zap.Int("total", h.ClientCount()))
@@ -147,6 +149,7 @@ func (h *Hub) closeAllClients() {
 	h.mu.Lock()
 	for id, client := range h.clients {
 		close(client.send)
+		close(client.Done)
 		delete(h.clients, id)
 		client.conn.Close()
 	}
@@ -161,6 +164,7 @@ func NewClient(conn *websocket.Conn, hub *Hub) *Client {
 		events:     make(map[string]bool),
 		hub:        hub,
 		pingPeriod: defaultPingPeriod,
+		Done:       make(chan struct{}),
 	}
 }
 
