@@ -379,3 +379,119 @@ func Test404ForUnknownRoutes(t *testing.T) {
 func TestServerImplementsHandler(t *testing.T) {
 	var _ http.Handler = (*Server)(nil)
 }
+
+func TestRateLimitWSUpgrade(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	rl := NewRateLimiter(2, time.Minute)
+	srv := NewServer(hub, zap.NewNop(), WithRateLimiter(rl))
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	wsURL := "ws" + ts.URL[4:] + "/ws"
+	for i := 0; i < 2; i++ {
+		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+		if err != nil {
+			t.Fatalf("dial %d: %v", i+1, err)
+		}
+		conn.Close()
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("expected rate limit rejection for third connection from same IP")
+	}
+	if resp != nil && resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
+	}
+}
+
+func TestConnectionTrackerRejects(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	ct := NewConnectionTracker(1)
+	srv := NewServer(hub, zap.NewNop(), WithConnectionTracker(ct))
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	wsURL := "ws" + ts.URL[4:] + "/ws"
+	conn1, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("first dial: %v", err)
+	}
+	defer conn1.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("expected rejection when max connections reached")
+	}
+	if resp != nil && resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+	if ct.Count() != 1 {
+		t.Errorf("Count = %d, want 1", ct.Count())
+	}
+}
+
+func TestConnectionTrackerAllowsAfterRemove(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	ct := NewConnectionTracker(1)
+	srv := NewServer(hub, zap.NewNop(), WithConnectionTracker(ct))
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	wsURL := "ws" + ts.URL[4:] + "/ws"
+	conn1, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("first dial: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	conn1.Close()
+	time.Sleep(200 * time.Millisecond)
+
+	conn2, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("second dial after first closed: %v", err)
+	}
+	defer conn2.Close()
+
+	if ct.Count() != 1 {
+		t.Errorf("Count = %d, want 1", ct.Count())
+	}
+}
+
+func TestHTTPBodySizeLimit(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	srv := NewServer(hub, zap.NewNop())
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	body := strings.NewReader(strings.Repeat("x", 2*1024*1024))
+	req, err := http.NewRequest("POST", ts.URL+"/api/presence", body)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		t.Error("expected error status for oversized body, got 200")
+	}
+}

@@ -49,6 +49,15 @@ func TestDefaults(t *testing.T) {
 	if cfg.Server.WriteTimeout != 10*time.Second {
 		t.Errorf("server.write_timeout = %v, want 10s", cfg.Server.WriteTimeout)
 	}
+	if cfg.Server.MaxWSConnections != 100 {
+		t.Errorf("server.max_ws_connections = %d, want 100", cfg.Server.MaxWSConnections)
+	}
+	if cfg.Server.RateLimitPerIP != 10 {
+		t.Errorf("server.rate_limit_per_ip = %d, want 10", cfg.Server.RateLimitPerIP)
+	}
+	if cfg.Server.RateLimitWindow != time.Minute {
+		t.Errorf("server.rate_limit_window = %v, want 1m", cfg.Server.RateLimitWindow)
+	}
 
 	if cfg.Auth.Enabled {
 		t.Error("auth.enabled = true, want false")
@@ -128,6 +137,9 @@ func TestEnvVarOverrides(t *testing.T) {
 		"PROXY_MDNS_ENABLED":        "false",
 		"PROXY_SERVER_READ_TIMEOUT":       "30s",
 		"PROXY_DISCORD_COALESCE_INTERVAL": "10s",
+		"PROXY_SERVER_MAX_WS_CONNECTIONS":  "50",
+		"PROXY_SERVER_RATE_LIMIT_PER_IP":   "20",
+		"PROXY_SERVER_RATE_LIMIT_WINDOW":   "30s",
 	}
 
 	for k, v := range envVars {
@@ -165,6 +177,15 @@ func TestEnvVarOverrides(t *testing.T) {
 	}
 	if cfg.Discord.CoalesceInterval != 10*time.Second {
 		t.Errorf("discord.coalesce_interval = %v, want 10s", cfg.Discord.CoalesceInterval)
+	}
+	if cfg.Server.MaxWSConnections != 50 {
+		t.Errorf("server.max_ws_connections = %d, want 50", cfg.Server.MaxWSConnections)
+	}
+	if cfg.Server.RateLimitPerIP != 20 {
+		t.Errorf("server.rate_limit_per_ip = %d, want 20", cfg.Server.RateLimitPerIP)
+	}
+	if cfg.Server.RateLimitWindow != 30*time.Second {
+		t.Errorf("server.rate_limit_window = %v, want 30s", cfg.Server.RateLimitWindow)
 	}
 }
 

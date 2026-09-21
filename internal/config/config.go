@@ -23,11 +23,14 @@ type DiscordConfig struct {
 }
 
 type ServerConfig struct {
-	Host         string        `mapstructure:"host"          yaml:"host"`
-	Port         int           `mapstructure:"port"          yaml:"port"`
-	WsPath       string        `mapstructure:"ws_path"       yaml:"ws_path"`
-	ReadTimeout  time.Duration `mapstructure:"read_timeout"  yaml:"read_timeout"`
-	WriteTimeout time.Duration `mapstructure:"write_timeout" yaml:"write_timeout"`
+	Host             string        `mapstructure:"host"              yaml:"host"`
+	Port             int           `mapstructure:"port"              yaml:"port"`
+	WsPath           string        `mapstructure:"ws_path"           yaml:"ws_path"`
+	ReadTimeout      time.Duration `mapstructure:"read_timeout"      yaml:"read_timeout"`
+	WriteTimeout     time.Duration `mapstructure:"write_timeout"     yaml:"write_timeout"`
+	MaxWSConnections int           `mapstructure:"max_ws_connections" yaml:"max_ws_connections"`
+	RateLimitPerIP   int           `mapstructure:"rate_limit_per_ip"  yaml:"rate_limit_per_ip"`
+	RateLimitWindow  time.Duration `mapstructure:"rate_limit_window"  yaml:"rate_limit_window"`
 }
 
 type AuthConfig struct {
@@ -68,6 +71,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.ws_path", "/ws")
 	v.SetDefault("server.read_timeout", 10*time.Second)
 	v.SetDefault("server.write_timeout", 10*time.Second)
+	v.SetDefault("server.max_ws_connections", 100)
+	v.SetDefault("server.rate_limit_per_ip", 10)
+	v.SetDefault("server.rate_limit_window", time.Minute)
 
 	v.SetDefault("auth.enabled", false)
 	v.SetDefault("auth.token", "")
@@ -98,6 +104,9 @@ func setupEnv(v *viper.Viper) {
 	_ = v.BindEnv("server.ws_path", "PROXY_SERVER_WS_PATH")
 	_ = v.BindEnv("server.read_timeout", "PROXY_SERVER_READ_TIMEOUT")
 	_ = v.BindEnv("server.write_timeout", "PROXY_SERVER_WRITE_TIMEOUT")
+	_ = v.BindEnv("server.max_ws_connections", "PROXY_SERVER_MAX_WS_CONNECTIONS")
+	_ = v.BindEnv("server.rate_limit_per_ip", "PROXY_SERVER_RATE_LIMIT_PER_IP")
+	_ = v.BindEnv("server.rate_limit_window", "PROXY_SERVER_RATE_LIMIT_WINDOW")
 
 	_ = v.BindEnv("auth.enabled", "PROXY_AUTH_ENABLED")
 	_ = v.BindEnv("auth.token", "PROXY_AUTH_TOKEN")
