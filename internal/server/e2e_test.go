@@ -472,14 +472,16 @@ func TestE2EAuthRejectsUnauthorized(t *testing.T) {
 		}
 	})
 
-	t.Run("rest presence without token returns 401", func(t *testing.T) {
-		resp, err := http.Get(ts.URL + "/api/presence")
-		if err != nil {
-			t.Fatalf("GET /api/presence: %v", err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	t.Run("rest endpoints remain accessible without token", func(t *testing.T) {
+		for _, ep := range []string{"/health", "/api/presence", "/api/state"} {
+			resp, err := http.Get(ts.URL + ep)
+			if err != nil {
+				t.Fatalf("GET %s: %v", ep, err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("%s: status = %d, want %d (auth only applies to WebSocket)", ep, resp.StatusCode, http.StatusOK)
+			}
 		}
 	})
 }
