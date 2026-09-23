@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 
+	"github.com/discord-proxy-rpc/discord-proxy-rpc/internal/config"
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/pkg/types"
 )
 
@@ -502,4 +503,88 @@ func Test404ForUnknownRoutes(t *testing.T) {
 
 func TestServerImplementsHandler(t *testing.T) {
 	var _ http.Handler = (*Server)(nil)
+}
+
+func TestRecoveryMiddlewareCatchesPanic(t *testing.T) {
+	logger := zap.NewNop()
+	panickingHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("test panic")
+	})
+	handler := RecoveryMiddleware(logger, panickingHandler)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/panic")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var apiErr APIError
+	if err := json.NewDecoder(resp.Body).Decode(&apiErr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if apiErr.Code != ErrCodeInternal {
+		t.Errorf("error code = %q, want %q", apiErr.Code, ErrCodeInternal)
+	}
+	if apiErr.Message != "internal server error" {
+		t.Errorf("error message = %q, want %q", apiErr.Message, "internal server error")
+	}
+}
+
+func TestRecoveryMiddlewareLetsNormalRequestsThrough(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	srv := NewServer(hub, zap.NewNop())
+	ts := httptest.NewServer(RecoveryMiddleware(zap.NewNop(), srv))
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestAPIErrorCodesInAuthResponse(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	cfg := config.AuthConfig{Enabled: true, Token: "secret"}
+	srv := NewServer(hub, zap.NewNop())
+	authedHandler := AuthMiddleware(cfg, zap.NewNop())(srv)
+	ts := httptest.NewServer(authedHandler)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/presence")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	var apiErr APIError
+	if err := json.NewDecoder(resp.Body).Decode(&apiErr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if apiErr.Code != ErrCodeUnauthorized {
+		t.Errorf("error code = %q, want %q", apiErr.Code, ErrCodeUnauthorized)
+	}
 }

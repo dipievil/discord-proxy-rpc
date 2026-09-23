@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -143,8 +144,14 @@ func assertUnauthorized(t *testing.T, rec *httptest.ResponseRecorder) {
 	if rec.Header().Get("Content-Type") != "application/json" {
 		t.Errorf("expected Content-Type application/json, got %q", rec.Header().Get("Content-Type"))
 	}
-	body := rec.Body.String()
-	if body != `{"error":"unauthorized"}` {
-		t.Errorf("expected JSON error body, got %q", body)
+	var apiErr APIError
+	if err := json.NewDecoder(rec.Body).Decode(&apiErr); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if apiErr.Code != ErrCodeUnauthorized {
+		t.Errorf("error code = %q, want %q", apiErr.Code, ErrCodeUnauthorized)
+	}
+	if apiErr.Message != "unauthorized" {
+		t.Errorf("error message = %q, want %q", apiErr.Message, "unauthorized")
 	}
 }

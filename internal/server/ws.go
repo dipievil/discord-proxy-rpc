@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"runtime/debug"
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
@@ -38,8 +39,19 @@ func (h *WSHandler) WithUpgrader(u *websocket.Upgrader) *WSHandler {
 }
 
 func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			h.logger.Error("recovered from panic in WebSocket handler",
+				zap.Any("error", rec),
+				zap.String("stack", string(debug.Stack())),
+				zap.String("remote", r.RemoteAddr),
+			)
+			writeAPIError(w, h.logger, http.StatusInternalServerError, ErrCodeInternal, "internal server error")
+		}
+	}()
+
 	if h.auth != nil && !h.auth(r) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeAPIError(w, h.logger, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized")
 		return
 	}
 

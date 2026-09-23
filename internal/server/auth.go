@@ -22,7 +22,7 @@ func AuthMiddleware(cfg config.AuthConfig, logger *zap.Logger) func(http.Handler
 				logger.Warn("auth: missing or malformed Authorization header",
 					zap.String("remote", r.RemoteAddr),
 				)
-				writeUnauthorized(w)
+				writeAPIError(w, logger, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized")
 				return
 			}
 
@@ -30,7 +30,7 @@ func AuthMiddleware(cfg config.AuthConfig, logger *zap.Logger) func(http.Handler
 				logger.Warn("auth: invalid token",
 					zap.String("remote", r.RemoteAddr),
 				)
-				writeUnauthorized(w)
+				writeAPIError(w, logger, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized")
 				return
 			}
 
@@ -56,10 +56,4 @@ func extractBearerToken(r *http.Request) string {
 	}
 
 	return token
-}
-
-func writeUnauthorized(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
-	w.Write([]byte(`{"error":"unauthorized"}`))
 }
