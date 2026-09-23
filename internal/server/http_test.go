@@ -26,14 +26,25 @@ func newTestHTTPServer(t *testing.T, opts ...ServerOption) (*Server, *httptest.S
 }
 
 func TestHealthEndpoint(t *testing.T) {
-	_, ts, _, cleanup := newTestHTTPServer(t)
-	defer cleanup()
+	hub, cancel := newTestHub(t)
+	defer cancel()
 
+	srv := NewServer(hub, zap.NewNop(),
+		WithGetIPCState(func() string { return string(StateConnected) }),
+	)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	start := time.Now()
 	resp, err := http.Get(ts.URL + "/health")
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
 	defer resp.Body.Close()
+
+	if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+		t.Errorf("response time = %v, want <10ms", elapsed)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
@@ -50,6 +61,119 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 	if body["status"] != "ok" {
 		t.Errorf("status = %q, want %q", body["status"], "ok")
+	}
+	if body["ipc"] != string(StateConnected) {
+		t.Errorf("ipc = %q, want %q", body["ipc"], StateConnected)
+	}
+}
+
+func TestHealthEndpointDisconnected(t *testing.T) {
+	_, ts, _, cleanup := newTestHTTPServer(t)
+	defer cleanup()
+
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["ipc"] != string(StateDisconnected) {
+		t.Errorf("ipc = %q, want %q", body["ipc"], StateDisconnected)
+	}
+}
+
+func TestHealthzEndpoint(t *testing.T) {
+	_, ts, _, cleanup := newTestHTTPServer(t)
+	defer cleanup()
+
+	start := time.Now()
+	resp, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+		t.Errorf("response time = %v, want <10ms", elapsed)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Errorf("status = %q, want %q", body["status"], "ok")
+	}
+}
+
+func TestReadyzEndpointConnected(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	srv := NewServer(hub, zap.NewNop(),
+		WithGetIPCState(func() string { return string(StateConnected) }),
+	)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	start := time.Now()
+	resp, err := http.Get(ts.URL + "/readyz")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+		t.Errorf("response time = %v, want <10ms", elapsed)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Errorf("status = %q, want %q", body["status"], "ok")
+	}
+	if body["ipc"] != "connected" {
+		t.Errorf("ipc = %q, want %q", body["ipc"], "connected")
+	}
+}
+
+func TestReadyzEndpointDisconnected(t *testing.T) {
+	_, ts, _, cleanup := newTestHTTPServer(t)
+	defer cleanup()
+
+	resp, err := http.Get(ts.URL + "/readyz")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "not ready" {
+		t.Errorf("status = %q, want %q", body["status"], "not ready")
+	}
+	if body["ipc"] != "disconnected" {
+		t.Errorf("ipc = %q, want %q", body["ipc"], "disconnected")
 	}
 }
 
@@ -202,7 +326,7 @@ func TestNoCORSHeadersOnAllEndpoints(t *testing.T) {
 	_, ts, _, cleanup := newTestHTTPServer(t)
 	defer cleanup()
 
-	endpoints := []string{"/health", "/api/presence", "/api/state", "/"}
+	endpoints := []string{"/health", "/healthz", "/readyz", "/api/presence", "/api/state", "/"}
 	for _, ep := range endpoints {
 		resp, err := http.Get(ts.URL + ep)
 		if err != nil {
