@@ -1,0 +1,44 @@
+{
+  "tasks": [
+    {
+      "id": "task-7.3",
+      "title": "Health endpoint for k8s",
+      "status": "code-review",
+      "description": "GET /health endpoint returns 200 OK with {status: 'ok'}. Optional IPC connection state. No auth required. Kubernetes liveness/readiness probe compatible.",
+      "trelloCardId": "6a840f518a14c2f6b84f1ec2",
+      "code-review": {
+        "prUrl": "https://github.com/dipievil/discord-proxy-rpc/pull/29",
+        "tries": 0
+      }
+    },
+    {
+      "id": "task-7.4",
+      "title": "Structured error handling and logging",
+      "status": "code-review",
+      "description": "Fix broken PR #30: rebase to remove 7.5 changes, implement RecoveryMiddleware, fix compilation errors, ensure all handlers use structured error responses.",
+      "trelloCardId": "6a840f52e594e44bbedc7dc7",
+      "code-review": {
+        "prUrl": "https://github.com/dipievil/discord-proxy-rpc/pull/30",
+        "tries": 0
+      }
+    },
+    {
+      "id": "task-7.5",
+      "title": "Rate limiting and DoS protection",
+      "status": "done",
+      "description": "PR #31 implementation done. Moved to Done on Trello.",
+      "trelloCardId": "6a840f537fc1a5071dfb47ad"
+    },
+    {
+      "id": "task-7.7",
+      "title": "E2E test script (scripts/e2e.sh)",
+      "status": "code-review",
+      "description": "scripts/e2e.sh created + internal/server/e2e_test.go with 15 E2E tests. All tests pass.",
+      "trelloCardId": "6a840f549460ef72a306c42e",
+      "code-review": {
+        "prUrl": "https://github.com/dipievil/discord-proxy-rpc/pull/33",
+        "tries": 0
+      }
+    }
+  ]
+}
