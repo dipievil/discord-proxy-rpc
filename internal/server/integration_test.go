@@ -16,62 +16,14 @@ import (
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/pkg/types"
 )
 
-func newIntegrationServer(t *testing.T, opts ...ServerOption) (*Hub, *httptest.Server) {
-	t.Helper()
-	hub, cancel := newTestHub(t)
-	t.Cleanup(cancel)
-	srv := NewServer(hub, zap.NewNop(), opts...)
-	ts := httptest.NewServer(srv)
-	t.Cleanup(ts.Close)
-	return hub, ts
-}
-
-func integrationDial(t *testing.T, ts *httptest.Server) *websocket.Conn {
-	t.Helper()
-	wsURL := "ws" + ts.URL[4:] + "/ws"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	return conn
-}
-
-func integrationSubscribe(t *testing.T, conn *websocket.Conn, events []string) {
-	t.Helper()
-	subMsg, err := NewSubscribeMessage(events)
-	if err != nil {
-		t.Fatalf("NewSubscribeMessage: %v", err)
-	}
-	data, _ := json.Marshal(subMsg)
-	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-		t.Fatalf("subscribe write: %v", err)
-	}
-	time.Sleep(100 * time.Millisecond)
-}
-
-func integrationRead(t *testing.T, conn *websocket.Conn) ServerMessage {
-	t.Helper()
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, data, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("ReadMessage: %v", err)
-	}
-	var msg ServerMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	return msg
-}
-
 func TestFullWSFlow(t *testing.T) {
 	activity := types.Activity{Details: "Test Game", State: "In Match", Type: types.ActivityPlaying}
 
-	hub, ts := newIntegrationServer(t,
+	hub, _, ts := newTestServer(t,
 		WithGetCurrentPresence(func() types.Activity { return activity }),
 	)
 
-	conn := integrationDial(t, ts)
+	conn := testDial(t, ts)
 	defer conn.Close()
 
 	time.Sleep(50 * time.Millisecond)
@@ -79,12 +31,12 @@ func TestFullWSFlow(t *testing.T) {
 		t.Fatalf("ClientCount = %d, want 1", hub.ClientCount())
 	}
 
-	integrationSubscribe(t, conn, []string{MsgTypePresence})
+	testSubscribe(t, conn, []string{MsgTypePresence})
 
 	presenceMsg, _ := NewPresenceMessage(activity)
 	hub.Broadcast(presenceMsg)
 
-	msg := integrationRead(t, conn)
+	msg := testRead(t, conn)
 	if msg.Type != MsgTypePresence {
 		t.Errorf("type = %q, want %q", msg.Type, MsgTypePresence)
 	}
@@ -102,14 +54,14 @@ func TestFullWSFlow(t *testing.T) {
 }
 
 func TestFullWSFlowFiltersUnsubscribedEvents(t *testing.T) {
-	hub, ts := newIntegrationServer(t)
+	hub, _, ts := newTestServer(t)
 
-	conn := integrationDial(t, ts)
+	conn := testDial(t, ts)
 	defer conn.Close()
 
 	time.Sleep(50 * time.Millisecond)
 
-	integrationSubscribe(t, conn, []string{MsgTypePresence})
+	testSubscribe(t, conn, []string{MsgTypePresence})
 
 	hub.Broadcast(NewStateMessage(StateConnected))
 
@@ -117,19 +69,19 @@ func TestFullWSFlowFiltersUnsubscribedEvents(t *testing.T) {
 	presenceMsg, _ := NewPresenceMessage(activity)
 	hub.Broadcast(presenceMsg)
 
-	msg := integrationRead(t, conn)
+	msg := testRead(t, conn)
 	if msg.Type != MsgTypePresence {
 		t.Errorf("type = %q, want %q (should skip state broadcast)", msg.Type, MsgTypePresence)
 	}
 }
 
 func TestHubBroadcastToMultipleClients(t *testing.T) {
-	hub, ts := newIntegrationServer(t)
+	hub, _, ts := newTestServer(t)
 
 	const numClients = 10
 	conns := make([]*websocket.Conn, numClients)
 	for i := 0; i < numClients; i++ {
-		conns[i] = integrationDial(t, ts)
+		conns[i] = testDial(t, ts)
 		defer conns[i].Close()
 	}
 
@@ -139,7 +91,7 @@ func TestHubBroadcastToMultipleClients(t *testing.T) {
 	}
 
 	for _, conn := range conns {
-		integrationSubscribe(t, conn, []string{MsgTypePresence})
+		testSubscribe(t, conn, []string{MsgTypePresence})
 	}
 
 	activity := types.Activity{Details: "Broadcast", Type: types.ActivityPlaying}
@@ -147,7 +99,7 @@ func TestHubBroadcastToMultipleClients(t *testing.T) {
 	hub.Broadcast(msg)
 
 	for i, conn := range conns {
-		received := integrationRead(t, conn)
+		received := testRead(t, conn)
 		if received.Type != MsgTypePresence {
 			t.Errorf("client %d type = %q, want %q", i, received.Type, MsgTypePresence)
 		}
@@ -252,9 +204,13 @@ func TestRESTEndpointsIntegration(t *testing.T) {
 		Details: "REST Test",
 		State:   "Playing",
 		Type:    types.ActivityPlaying,
+		Assets: &types.Assets{
+			LargeImage: "game-icon",
+			LargeText:  "REST Test",
+		},
 	}
 
-	_, ts := newIntegrationServer(t,
+	_, _, ts := newTestServer(t,
 		WithGetCurrentPresence(func() types.Activity { return activity }),
 		WithGetIPCState(func() string { return string(StateConnected) }),
 	)
@@ -297,6 +253,9 @@ func TestRESTEndpointsIntegration(t *testing.T) {
 		if got.State != "Playing" {
 			t.Errorf("State = %q, want %q", got.State, "Playing")
 		}
+		if got.Assets == nil || got.Assets.LargeImage != "game-icon" {
+			t.Errorf("Assets.LargeImage = %v, want %q", got.Assets, "game-icon")
+		}
 	})
 
 	t.Run("state returns connection status", func(t *testing.T) {
@@ -314,7 +273,7 @@ func TestRESTEndpointsIntegration(t *testing.T) {
 	})
 
 	t.Run("no wildcard CORS headers", func(t *testing.T) {
-		for _, ep := range []string{"/health", "/api/presence", "/api/state"} {
+		for _, ep := range []string{"/health", "/api/presence", "/api/state", "/"} {
 			resp, err := http.Get(ts.URL + ep)
 			if err != nil {
 				t.Fatalf("request %s: %v", ep, err)
@@ -328,20 +287,22 @@ func TestRESTEndpointsIntegration(t *testing.T) {
 	})
 
 	t.Run("unknown route returns 404", func(t *testing.T) {
-		resp, err := http.Get(ts.URL + "/does-not-exist")
-		if err != nil {
-			t.Fatalf("request: %v", err)
-		}
-		defer resp.Body.Close()
+		for _, route := range []string{"/does-not-exist", "/api/unknown", "/foo/bar"} {
+			resp, err := http.Get(ts.URL + route)
+			if err != nil {
+				t.Fatalf("request %s: %v", route, err)
+			}
+			resp.Body.Close()
 
-		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("GET %s: status = %d, want %d", route, resp.StatusCode, http.StatusNotFound)
+			}
 		}
 	})
 }
 
 func TestDashboardServingIntegration(t *testing.T) {
-	_, ts := newIntegrationServer(t)
+	_, _, ts := newTestServer(t)
 
 	resp, err := http.Get(ts.URL + "/")
 	if err != nil {
@@ -373,12 +334,12 @@ func TestDashboardServingIntegration(t *testing.T) {
 }
 
 func TestConcurrentWSConnections(t *testing.T) {
-	hub, ts := newIntegrationServer(t)
+	hub, _, ts := newTestServer(t)
 
 	const numClients = 20
 	conns := make([]*websocket.Conn, numClients)
 	for i := 0; i < numClients; i++ {
-		conns[i] = integrationDial(t, ts)
+		conns[i] = testDial(t, ts)
 		defer conns[i].Close()
 	}
 
@@ -392,7 +353,7 @@ func TestConcurrentWSConnections(t *testing.T) {
 		subWg.Add(1)
 		go func(c *websocket.Conn) {
 			defer subWg.Done()
-			integrationSubscribe(t, c, []string{MsgTypePresence, MsgTypeState})
+			testSubscribe(t, c, []string{MsgTypePresence, MsgTypeState})
 		}(conn)
 	}
 	subWg.Wait()
@@ -405,11 +366,11 @@ func TestConcurrentWSConnections(t *testing.T) {
 	hub.Broadcast(NewStateMessage(StateConnected))
 
 	for i, conn := range conns {
-		presence := integrationRead(t, conn)
+		presence := testRead(t, conn)
 		if presence.Type != MsgTypePresence {
 			t.Errorf("client %d first = %q, want %q", i, presence.Type, MsgTypePresence)
 		}
-		state := integrationRead(t, conn)
+		state := testRead(t, conn)
 		if state.Type != MsgTypeState {
 			t.Errorf("client %d second = %q, want %q", i, state.Type, MsgTypeState)
 		}
@@ -417,9 +378,9 @@ func TestConcurrentWSConnections(t *testing.T) {
 }
 
 func TestGracefulDisconnect(t *testing.T) {
-	hub, ts := newIntegrationServer(t)
+	hub, _, ts := newTestServer(t)
 
-	conn := integrationDial(t, ts)
+	conn := testDial(t, ts)
 	time.Sleep(50 * time.Millisecond)
 	if got := hub.ClientCount(); got != 1 {
 		t.Fatalf("ClientCount after connect = %d, want 1", got)
@@ -435,12 +396,12 @@ func TestGracefulDisconnect(t *testing.T) {
 }
 
 func TestGracefulDisconnectMultipleClients(t *testing.T) {
-	hub, ts := newIntegrationServer(t)
+	hub, _, ts := newTestServer(t)
 
 	const numClients = 5
 	conns := make([]*websocket.Conn, numClients)
 	for i := 0; i < numClients; i++ {
-		conns[i] = integrationDial(t, ts)
+		conns[i] = testDial(t, ts)
 	}
 
 	time.Sleep(100 * time.Millisecond)
@@ -470,23 +431,18 @@ func TestGracefulDisconnectMultipleClients(t *testing.T) {
 func TestPresenceUpdateFlow(t *testing.T) {
 	currentActivity := types.Activity{Details: "Flow Game", State: "Queue", Type: types.ActivityPlaying}
 
-	hub, ts := newIntegrationServer(t,
+	hub, _, ts := newTestServer(t,
 		WithGetCurrentPresence(func() types.Activity { return currentActivity }),
 	)
 
-	conn := integrationDial(t, ts)
+	conn := testDial(t, ts)
 	defer conn.Close()
 
 	time.Sleep(50 * time.Millisecond)
 
-	getMsg := NewGetCurrentMessage()
-	getData, _ := json.Marshal(getMsg)
-	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	if err := conn.WriteMessage(websocket.TextMessage, getData); err != nil {
-		t.Fatalf("write get_current: %v", err)
-	}
+	testRequestCurrent(t, conn)
 
-	resp := integrationRead(t, conn)
+	resp := testRead(t, conn)
 	if resp.Type != MsgTypeCurrent {
 		t.Errorf("type = %q, want %q", resp.Type, MsgTypeCurrent)
 	}
@@ -502,13 +458,13 @@ func TestPresenceUpdateFlow(t *testing.T) {
 		t.Errorf("State = %q, want %q", got.State, "Queue")
 	}
 
-	integrationSubscribe(t, conn, []string{MsgTypePresence})
+	testSubscribe(t, conn, []string{MsgTypePresence})
 
 	updatedActivity := types.Activity{Details: "Flow Game", State: "In Match", Type: types.ActivityPlaying}
 	presenceMsg, _ := NewPresenceMessage(updatedActivity)
 	hub.Broadcast(presenceMsg)
 
-	update := integrationRead(t, conn)
+	update := testRead(t, conn)
 	if update.Type != MsgTypePresence {
 		t.Errorf("update type = %q, want %q", update.Type, MsgTypePresence)
 	}
@@ -523,11 +479,11 @@ func TestPresenceUpdateFlow(t *testing.T) {
 func TestMixedRESTAndWS(t *testing.T) {
 	activity := types.Activity{Details: "Mixed Test", Type: types.ActivityPlaying}
 
-	hub, ts := newIntegrationServer(t,
+	hub, _, ts := newTestServer(t,
 		WithGetCurrentPresence(func() types.Activity { return activity }),
 	)
 
-	conn := integrationDial(t, ts)
+	conn := testDial(t, ts)
 	defer conn.Close()
 
 	time.Sleep(50 * time.Millisecond)
@@ -550,12 +506,12 @@ func TestMixedRESTAndWS(t *testing.T) {
 		t.Errorf("REST Details = %q, want %q", restActivity.Details, "Mixed Test")
 	}
 
-	integrationSubscribe(t, conn, []string{MsgTypePresence})
+	testSubscribe(t, conn, []string{MsgTypePresence})
 
 	msg, _ := NewPresenceMessage(activity)
 	hub.Broadcast(msg)
 
-	wsMsg := integrationRead(t, conn)
+	wsMsg := testRead(t, conn)
 	if wsMsg.Type != MsgTypePresence {
 		t.Errorf("WS type = %q, want %q", wsMsg.Type, MsgTypePresence)
 	}
