@@ -9,6 +9,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+
+	"github.com/discord-proxy-rpc/discord-proxy-rpc/pkg/types"
 )
 
 // newTestServer starts a hub plus an HTTP test server. It returns the hub, the
@@ -51,6 +53,10 @@ func testWrite(t *testing.T, conn *websocket.Conn, msg any) {
 	}
 }
 
+// testSubscribe subscribes conn to the given events and returns only once the
+// server has processed the message. ReadPump handles client messages in order,
+// so a get_current round-trip after the subscribe is a deterministic ack —
+// sleeping for a fixed interval would be racy under -race.
 func testSubscribe(t *testing.T, conn *websocket.Conn, events []string) {
 	t.Helper()
 	subMsg, err := NewSubscribeMessage(events)
@@ -58,7 +64,24 @@ func testSubscribe(t *testing.T, conn *websocket.Conn, events []string) {
 		t.Fatalf("NewSubscribeMessage: %v", err)
 	}
 	testWrite(t, conn, subMsg)
-	time.Sleep(100 * time.Millisecond)
+	testRequestCurrent(t, conn)
+	if ack := testRead(t, conn); ack.Type != MsgTypeCurrent {
+		t.Fatalf("subscribe ack: type = %q, want %q", ack.Type, MsgTypeCurrent)
+	}
+}
+
+// waitForClientCount blocks until the hub reports want registered clients. The
+// hub registers from the handler goroutine, so poll instead of sleeping.
+func waitForClientCount(t *testing.T, hub *Hub, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if hub.ClientCount() == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("ClientCount = %d, want %d", hub.ClientCount(), want)
 }
 
 func testRead(t *testing.T, conn *websocket.Conn) ServerMessage {
@@ -78,4 +101,16 @@ func testRead(t *testing.T, conn *websocket.Conn) ServerMessage {
 func testRequestCurrent(t *testing.T, conn *websocket.Conn) {
 	t.Helper()
 	testWrite(t, conn, NewGetCurrentMessage())
+}
+
+// testDecodeActivity unmarshals a presence or current payload. Checking the
+// error keeps a malformed payload from surfacing as a confusing
+// "Details = "", want ..." mismatch.
+func testDecodeActivity(t *testing.T, payload json.RawMessage, what string) types.Activity {
+	t.Helper()
+	var activity types.Activity
+	if err := json.Unmarshal(payload, &activity); err != nil {
+		t.Fatalf("decode %s payload: %v", what, err)
+	}
+	return activity
 }

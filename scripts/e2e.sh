@@ -47,8 +47,10 @@ fi
 echo ""
 
 # --- Phase 2: Go unit + integration tests ---
+# Run the whole package: a name-based -run regex silently misses tests and
+# picks up unrelated ones whose names happen to share a prefix.
 echo "--- Phase 2: Unit & Integration Tests ---"
-if (cd "$ROOT_DIR" && go test -race -count=1 -timeout 60s ./internal/server/ -run 'TestHealth|TestPresence|TestState|TestDashboard|TestFullWSFlow|TestRESTEndpointsIntegration|TestDashboardServingIntegration|TestAuthMiddleware' -v 2>&1 | tail -40); then
+if (cd "$ROOT_DIR" && go test -race -count=1 -timeout 120s ./internal/server/ -v 2>&1 | tail -40); then
     pass "Go integration tests passed"
 else
     fail "Go integration tests failed"
@@ -57,7 +59,7 @@ echo ""
 
 # --- Phase 3: E2E programmatic test ---
 echo "--- Phase 3: E2E Full Stack Test ---"
-if (cd "$ROOT_DIR" && go test -race -count=1 -timeout 60s ./internal/server/ -run '^TestE2E' -v 2>&1 | tail -60); then
+if (cd "$ROOT_DIR" && go test -race -count=1 -timeout 60s ./internal/server/ -run '^TestE2E' -v 2>&1 | tail -40); then
     pass "E2E full stack test passed"
 else
     fail "E2E full stack test failed"

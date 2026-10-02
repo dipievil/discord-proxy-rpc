@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
@@ -26,10 +25,7 @@ func TestFullWSFlow(t *testing.T) {
 	conn := testDial(t, ts)
 	defer conn.Close()
 
-	time.Sleep(50 * time.Millisecond)
-	if hub.ClientCount() != 1 {
-		t.Fatalf("ClientCount = %d, want 1", hub.ClientCount())
-	}
+	waitForClientCount(t, hub, 1)
 
 	testSubscribe(t, conn, []string{MsgTypePresence})
 
@@ -59,7 +55,7 @@ func TestFullWSFlowFiltersUnsubscribedEvents(t *testing.T) {
 	conn := testDial(t, ts)
 	defer conn.Close()
 
-	time.Sleep(50 * time.Millisecond)
+	waitForClientCount(t, hub, 1)
 
 	testSubscribe(t, conn, []string{MsgTypePresence})
 
@@ -85,10 +81,7 @@ func TestHubBroadcastToMultipleClients(t *testing.T) {
 		defer conns[i].Close()
 	}
 
-	time.Sleep(200 * time.Millisecond)
-	if got := hub.ClientCount(); got != numClients {
-		t.Fatalf("ClientCount = %d, want %d", got, numClients)
-	}
+	waitForClientCount(t, hub, numClients)
 
 	for _, conn := range conns {
 		testSubscribe(t, conn, []string{MsgTypePresence})
@@ -181,10 +174,7 @@ func TestAuthMiddlewareIntegration(t *testing.T) {
 				if err != nil {
 					t.Fatalf("expected WS success, got error: %v", err)
 				}
-				time.Sleep(50 * time.Millisecond)
-				if hub.ClientCount() != 1 {
-					t.Errorf("ClientCount = %d, want 1", hub.ClientCount())
-				}
+				waitForClientCount(t, hub, 1)
 				conn.Close()
 			} else {
 				if err == nil {
@@ -343,10 +333,7 @@ func TestConcurrentWSConnections(t *testing.T) {
 		defer conns[i].Close()
 	}
 
-	time.Sleep(200 * time.Millisecond)
-	if got := hub.ClientCount(); got != numClients {
-		t.Fatalf("ClientCount = %d, want %d", got, numClients)
-	}
+	waitForClientCount(t, hub, numClients)
 
 	var subWg sync.WaitGroup
 	for _, conn := range conns {
@@ -357,8 +344,6 @@ func TestConcurrentWSConnections(t *testing.T) {
 		}(conn)
 	}
 	subWg.Wait()
-
-	time.Sleep(100 * time.Millisecond)
 
 	activity := types.Activity{Details: "Concurrent", Type: types.ActivityPlaying}
 	presenceMsg, _ := NewPresenceMessage(activity)
@@ -381,18 +366,12 @@ func TestGracefulDisconnect(t *testing.T) {
 	hub, _, ts := newTestServer(t)
 
 	conn := testDial(t, ts)
-	time.Sleep(50 * time.Millisecond)
-	if got := hub.ClientCount(); got != 1 {
-		t.Fatalf("ClientCount after connect = %d, want 1", got)
-	}
+	waitForClientCount(t, hub, 1)
 
 	conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 	conn.Close()
 
-	time.Sleep(200 * time.Millisecond)
-	if got := hub.ClientCount(); got != 0 {
-		t.Fatalf("ClientCount after disconnect = %d, want 0", got)
-	}
+	waitForClientCount(t, hub, 0)
 }
 
 func TestGracefulDisconnectMultipleClients(t *testing.T) {
@@ -404,28 +383,19 @@ func TestGracefulDisconnectMultipleClients(t *testing.T) {
 		conns[i] = testDial(t, ts)
 	}
 
-	time.Sleep(100 * time.Millisecond)
-	if got := hub.ClientCount(); got != numClients {
-		t.Fatalf("ClientCount = %d, want %d", got, numClients)
-	}
+	waitForClientCount(t, hub, numClients)
 
 	for i := 0; i < numClients-1; i++ {
 		conns[i].WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 		conns[i].Close()
 	}
 
-	time.Sleep(200 * time.Millisecond)
-	if got := hub.ClientCount(); got != 1 {
-		t.Fatalf("ClientCount after partial disconnect = %d, want 1", got)
-	}
+	waitForClientCount(t, hub, 1)
 
 	conns[numClients-1].WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 	conns[numClients-1].Close()
 
-	time.Sleep(200 * time.Millisecond)
-	if got := hub.ClientCount(); got != 0 {
-		t.Fatalf("ClientCount after full disconnect = %d, want 0", got)
-	}
+	waitForClientCount(t, hub, 0)
 }
 
 func TestPresenceUpdateFlow(t *testing.T) {
@@ -438,7 +408,7 @@ func TestPresenceUpdateFlow(t *testing.T) {
 	conn := testDial(t, ts)
 	defer conn.Close()
 
-	time.Sleep(50 * time.Millisecond)
+	waitForClientCount(t, hub, 1)
 
 	testRequestCurrent(t, conn)
 
@@ -486,7 +456,7 @@ func TestMixedRESTAndWS(t *testing.T) {
 	conn := testDial(t, ts)
 	defer conn.Close()
 
-	time.Sleep(50 * time.Millisecond)
+	waitForClientCount(t, hub, 1)
 
 	resp, err := http.Get(ts.URL + "/api/presence")
 	if err != nil {

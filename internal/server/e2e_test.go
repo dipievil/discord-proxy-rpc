@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"sync"
 	"testing"
@@ -22,7 +21,7 @@ func TestE2EWSStateBroadcast(t *testing.T) {
 
 	conn := testDial(t, ts)
 	defer conn.Close()
-	time.Sleep(50 * time.Millisecond)
+	waitForClientCount(t, hub, 1)
 
 	testSubscribe(t, conn, []string{MsgTypeState})
 
@@ -54,7 +53,7 @@ func TestE2EPresenceUpdateLifecycle(t *testing.T) {
 
 	conn := testDial(t, ts)
 	defer conn.Close()
-	time.Sleep(50 * time.Millisecond)
+	waitForClientCount(t, hub, 1)
 
 	testSubscribe(t, conn, []string{MsgTypePresence})
 
@@ -65,9 +64,7 @@ func TestE2EPresenceUpdateLifecycle(t *testing.T) {
 	if msg.Type != MsgTypePresence {
 		t.Errorf("type = %q, want %q", msg.Type, MsgTypePresence)
 	}
-	var got types.Activity
-	json.Unmarshal(msg.Payload, &got)
-	if got.State != "Lobby" {
+	if got := testDecodeActivity(t, msg.Payload, "presence"); got.State != "Lobby" {
 		t.Errorf("State = %q, want %q", got.State, "Lobby")
 	}
 
@@ -79,10 +76,11 @@ func TestE2EPresenceUpdateLifecycle(t *testing.T) {
 	hub.Broadcast(presenceMsg2)
 
 	msg2 := testRead(t, conn)
-	var got2 types.Activity
-	json.Unmarshal(msg2.Payload, &got2)
-	if got2.State != "In Match" {
-		t.Errorf("State = %q, want %q", got2.State, "In Match")
+	if msg2.Type != MsgTypePresence {
+		t.Errorf("type = %q, want %q", msg2.Type, MsgTypePresence)
+	}
+	if got := testDecodeActivity(t, msg2.Payload, "presence"); got.State != "In Match" {
+		t.Errorf("State = %q, want %q", got.State, "In Match")
 	}
 
 	testRequestCurrent(t, conn)
@@ -91,10 +89,8 @@ func TestE2EPresenceUpdateLifecycle(t *testing.T) {
 	if resp.Type != MsgTypeCurrent {
 		t.Errorf("type = %q, want %q", resp.Type, MsgTypeCurrent)
 	}
-	var got3 types.Activity
-	json.Unmarshal(resp.Payload, &got3)
-	if got3.State != "In Match" {
-		t.Errorf("get_current State = %q, want %q", got3.State, "In Match")
+	if got := testDecodeActivity(t, resp.Payload, "current"); got.State != "In Match" {
+		t.Errorf("get_current State = %q, want %q", got.State, "In Match")
 	}
 }
 
@@ -133,11 +129,7 @@ func TestE2EAuthRejectsUnauthorized(t *testing.T) {
 			t.Fatalf("expected WS connection with valid token to succeed: %v", err)
 		}
 		defer conn.Close()
-		time.Sleep(50 * time.Millisecond)
-
-		if hub.ClientCount() != 1 {
-			t.Errorf("ClientCount = %d, want 1", hub.ClientCount())
-		}
+		waitForClientCount(t, hub, 1)
 	})
 
 	t.Run("rest endpoints remain accessible without token", func(t *testing.T) {
@@ -157,18 +149,14 @@ func TestE2EAuthRejectsUnauthorized(t *testing.T) {
 func TestE2EServerShutdownCleansUp(t *testing.T) {
 	hub, cancel, ts := newTestServer(t)
 
-	conns := make([]*websocket.Conn, 3)
-	for i := 0; i < 3; i++ {
+	const numClients = 3
+	conns := make([]*websocket.Conn, numClients)
+	for i := range conns {
 		conns[i] = testDial(t, ts)
 	}
-	time.Sleep(100 * time.Millisecond)
-
-	if hub.ClientCount() != 3 {
-		t.Fatalf("ClientCount = %d, want 3", hub.ClientCount())
-	}
+	waitForClientCount(t, hub, numClients)
 
 	cancel()
-	time.Sleep(200 * time.Millisecond)
 
 	for i, conn := range conns {
 		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
