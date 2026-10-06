@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -85,7 +86,7 @@ func (h *Hub) Run(ctx context.Context) {
 			}
 			data, err := json.Marshal(msg)
 			if err != nil {
-				h.logger.Error("failed to marshal broadcast message", zap.Error(err))
+				h.logger.Error("failed to marshal broadcast message", zap.Error(fmt.Errorf("marshal broadcast: %w", err)))
 				continue
 			}
 			h.mu.RLock()

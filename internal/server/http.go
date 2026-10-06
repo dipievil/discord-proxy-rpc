@@ -94,6 +94,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/presence", s.handlePresence)
 	s.mux.HandleFunc("/api/state", s.handleState)
 	s.mux.HandleFunc("/health", s.handleHealth)
+	s.mux.HandleFunc("/healthz", s.handleHealthz)
+	s.mux.HandleFunc("/readyz", s.handleReadyz)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -121,17 +123,46 @@ func (s *Server) handlePresence(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	activity := s.getCurrentPresence()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(activity)
+	if err := json.NewEncoder(w).Encode(activity); err != nil {
+		s.logger.Error("failed to encode presence response", zap.Error(err))
+	}
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	state := s.getIPCState()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": state})
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": state}); err != nil {
+		s.logger.Error("failed to encode state response", zap.Error(err))
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok", "ipc": s.getIPCState()}); err != nil {
+		s.logger.Error("failed to encode health response", zap.Error(err))
+	}
+}
+
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
+		s.logger.Error("failed to encode healthz response", zap.Error(err))
+	}
+}
+
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.getIPCState() == string(StateConnected) {
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok", "ipc": "connected"}); err != nil {
+			s.logger.Error("failed to encode readyz response", zap.Error(err))
+		}
+		return
+	}
+	w.WriteHeader(http.StatusServiceUnavailable)
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "not ready", "ipc": "disconnected"}); err != nil {
+		s.logger.Error("failed to encode readyz response", zap.Error(err))
+	}
 }

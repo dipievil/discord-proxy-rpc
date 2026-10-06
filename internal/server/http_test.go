@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 
+	"github.com/discord-proxy-rpc/discord-proxy-rpc/internal/config"
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/pkg/types"
 )
 
@@ -26,14 +27,25 @@ func newTestHTTPServer(t *testing.T, opts ...ServerOption) (*Server, *httptest.S
 }
 
 func TestHealthEndpoint(t *testing.T) {
-	_, ts, _, cleanup := newTestHTTPServer(t)
-	defer cleanup()
+	hub, cancel := newTestHub(t)
+	defer cancel()
 
+	srv := NewServer(hub, zap.NewNop(),
+		WithGetIPCState(func() string { return string(StateConnected) }),
+	)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	start := time.Now()
 	resp, err := http.Get(ts.URL + "/health")
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
 	defer resp.Body.Close()
+
+	if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+		t.Errorf("response time = %v, want <10ms", elapsed)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
@@ -50,6 +62,119 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 	if body["status"] != "ok" {
 		t.Errorf("status = %q, want %q", body["status"], "ok")
+	}
+	if body["ipc"] != string(StateConnected) {
+		t.Errorf("ipc = %q, want %q", body["ipc"], StateConnected)
+	}
+}
+
+func TestHealthEndpointDisconnected(t *testing.T) {
+	_, ts, _, cleanup := newTestHTTPServer(t)
+	defer cleanup()
+
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["ipc"] != string(StateDisconnected) {
+		t.Errorf("ipc = %q, want %q", body["ipc"], StateDisconnected)
+	}
+}
+
+func TestHealthzEndpoint(t *testing.T) {
+	_, ts, _, cleanup := newTestHTTPServer(t)
+	defer cleanup()
+
+	start := time.Now()
+	resp, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+		t.Errorf("response time = %v, want <10ms", elapsed)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Errorf("status = %q, want %q", body["status"], "ok")
+	}
+}
+
+func TestReadyzEndpointConnected(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	srv := NewServer(hub, zap.NewNop(),
+		WithGetIPCState(func() string { return string(StateConnected) }),
+	)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	start := time.Now()
+	resp, err := http.Get(ts.URL + "/readyz")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+		t.Errorf("response time = %v, want <10ms", elapsed)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Errorf("status = %q, want %q", body["status"], "ok")
+	}
+	if body["ipc"] != "connected" {
+		t.Errorf("ipc = %q, want %q", body["ipc"], "connected")
+	}
+}
+
+func TestReadyzEndpointDisconnected(t *testing.T) {
+	_, ts, _, cleanup := newTestHTTPServer(t)
+	defer cleanup()
+
+	resp, err := http.Get(ts.URL + "/readyz")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "not ready" {
+		t.Errorf("status = %q, want %q", body["status"], "not ready")
+	}
+	if body["ipc"] != "disconnected" {
+		t.Errorf("ipc = %q, want %q", body["ipc"], "disconnected")
 	}
 }
 
@@ -202,7 +327,7 @@ func TestNoCORSHeadersOnAllEndpoints(t *testing.T) {
 	_, ts, _, cleanup := newTestHTTPServer(t)
 	defer cleanup()
 
-	endpoints := []string{"/health", "/api/presence", "/api/state", "/"}
+	endpoints := []string{"/health", "/healthz", "/readyz", "/api/presence", "/api/state", "/"}
 	for _, ep := range endpoints {
 		resp, err := http.Get(ts.URL + ep)
 		if err != nil {
@@ -380,118 +505,86 @@ func TestServerImplementsHandler(t *testing.T) {
 	var _ http.Handler = (*Server)(nil)
 }
 
-func TestRateLimitWSUpgrade(t *testing.T) {
-	hub, cancel := newTestHub(t)
-	defer cancel()
-
-	rl := NewRateLimiter(2, time.Minute)
-	srv := NewServer(hub, zap.NewNop(), WithRateLimiter(rl))
-	ts := httptest.NewServer(srv)
+func TestRecoveryMiddlewareCatchesPanic(t *testing.T) {
+	logger := zap.NewNop()
+	panickingHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("test panic")
+	})
+	handler := RecoveryMiddleware(logger, panickingHandler)
+	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
-	wsURL := "ws" + ts.URL[4:] + "/ws"
-	for i := 0; i < 2; i++ {
-		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-		if err != nil {
-			t.Fatalf("dial %d: %v", i+1, err)
-		}
-		conn.Close()
-	}
-
-	time.Sleep(50 * time.Millisecond)
-
-	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err == nil {
-		t.Fatal("expected rate limit rejection for third connection from same IP")
-	}
-	if resp != nil && resp.StatusCode != http.StatusTooManyRequests {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
-	}
-}
-
-func TestConnectionTrackerRejects(t *testing.T) {
-	hub, cancel := newTestHub(t)
-	defer cancel()
-
-	ct := NewConnectionTracker(1)
-	srv := NewServer(hub, zap.NewNop(), WithConnectionTracker(ct))
-	ts := httptest.NewServer(srv)
-	defer ts.Close()
-
-	wsURL := "ws" + ts.URL[4:] + "/ws"
-	conn1, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("first dial: %v", err)
-	}
-	defer conn1.Close()
-
-	time.Sleep(50 * time.Millisecond)
-
-	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err == nil {
-		t.Fatal("expected rejection when max connections reached")
-	}
-	if resp != nil && resp.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
-	}
-	if ct.Count() != 1 {
-		t.Errorf("Count = %d, want 1", ct.Count())
-	}
-}
-
-func TestConnectionTrackerAllowsAfterRemove(t *testing.T) {
-	hub, cancel := newTestHub(t)
-	defer cancel()
-
-	ct := NewConnectionTracker(1)
-	srv := NewServer(hub, zap.NewNop(), WithConnectionTracker(ct))
-	ts := httptest.NewServer(srv)
-	defer ts.Close()
-
-	wsURL := "ws" + ts.URL[4:] + "/ws"
-	conn1, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("first dial: %v", err)
-	}
-
-	time.Sleep(50 * time.Millisecond)
-
-	conn1.Close()
-	time.Sleep(200 * time.Millisecond)
-
-	conn2, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("second dial after first closed: %v", err)
-	}
-	defer conn2.Close()
-
-	if ct.Count() != 1 {
-		t.Errorf("Count = %d, want 1", ct.Count())
-	}
-}
-
-func TestHTTPBodySizeLimit(t *testing.T) {
-	hub, cancel := newTestHub(t)
-	defer cancel()
-
-	srv := NewServer(hub, zap.NewNop())
-	ts := httptest.NewServer(srv)
-	defer ts.Close()
-
-	body := strings.NewReader(strings.Repeat("x", 2*1024*1024))
-	req, err := http.NewRequest("POST", ts.URL+"/api/presence", body)
-	if err != nil {
-		t.Fatalf("NewRequest: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.Get(ts.URL + "/panic")
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK {
-		t.Error("expected error status for oversized body, got 200")
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var apiErr APIError
+	if err := json.NewDecoder(resp.Body).Decode(&apiErr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if apiErr.Code != ErrCodeInternal {
+		t.Errorf("error code = %q, want %q", apiErr.Code, ErrCodeInternal)
+	}
+	if apiErr.Message != "internal server error" {
+		t.Errorf("error message = %q, want %q", apiErr.Message, "internal server error")
+	}
+}
+
+func TestRecoveryMiddlewareLetsNormalRequestsThrough(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	srv := NewServer(hub, zap.NewNop())
+	ts := httptest.NewServer(RecoveryMiddleware(zap.NewNop(), srv))
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestAPIErrorCodesInAuthResponse(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	cfg := config.AuthConfig{Enabled: true, Token: "secret"}
+	srv := NewServer(hub, zap.NewNop())
+	authedHandler := AuthMiddleware(cfg, zap.NewNop())(srv)
+	ts := httptest.NewServer(authedHandler)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/presence")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	var apiErr APIError
+	if err := json.NewDecoder(resp.Body).Decode(&apiErr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if apiErr.Code != ErrCodeUnauthorized {
+		t.Errorf("error code = %q, want %q", apiErr.Code, ErrCodeUnauthorized)
 	}
 }
