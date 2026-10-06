@@ -98,8 +98,39 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/readyz", s.handleReadyz)
 }
 
+// maxRequestBodyBytes caps the request body accepted on any route, so a
+// malicious client cannot exhaust memory by streaming an unbounded payload.
+const maxRequestBodyBytes = 1 << 20
+
+// ServeHTTP enforces the request body size limit before dispatching to the
+// mux. Declared oversized bodies are rejected up front with 413; bodies of
+// unknown length are truncated by MaxBytesReader so a read past the limit
+// fails instead of buffering indefinitely.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.ContentLength > maxRequestBodyBytes {
+		s.logger.Warn("request body too large",
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.Path),
+			zap.Int64("content_length", r.ContentLength),
+		)
+		writeAPIError(w, s.logger, http.StatusRequestEntityTooLarge,
+			ErrCodePayloadTooLarge, "request body too large")
+		return
+	}
+
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	}
+
 	s.mux.ServeHTTP(w, r)
+}
+
+// Close releases resources owned by the server, currently the rate limiter's
+// background cleanup goroutine. It is idempotent.
+func (s *Server) Close() {
+	if s.rateLimiter != nil {
+		s.rateLimiter.Stop()
+	}
 }
 
 func (s *Server) rateLimitWS(next http.HandlerFunc) http.HandlerFunc {
@@ -107,7 +138,12 @@ func (s *Server) rateLimitWS(next http.HandlerFunc) http.HandlerFunc {
 		if s.rateLimiter != nil {
 			ip := extractIP(r.RemoteAddr)
 			if !s.rateLimiter.Allow(ip) {
-				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+				s.logger.Warn("WebSocket upgrade rate limited",
+					zap.String("ip", ip),
+					zap.String("remote", r.RemoteAddr),
+				)
+				writeAPIError(w, s.logger, http.StatusTooManyRequests,
+					ErrCodeRateLimited, "rate limit exceeded")
 				return
 			}
 		}
@@ -120,7 +156,6 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePresence(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	activity := s.getCurrentPresence()
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(activity); err != nil {
@@ -129,7 +164,6 @@ func (s *Server) handlePresence(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	state := s.getIPCState()
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]string{"status": state}); err != nil {

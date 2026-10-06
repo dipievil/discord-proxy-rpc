@@ -129,17 +129,17 @@ auth:
 
 func TestEnvVarOverrides(t *testing.T) {
 	envVars := map[string]string{
-		"PROXY_DISCORD_CLIENT_ID":   "env-client-id",
-		"PROXY_SERVER_PORT":         "7777",
-		"PROXY_AUTH_TOKEN":          "env-token",
-		"PROXY_AUTH_ENABLED":        "true",
-		"PROXY_LOGGING_LEVEL":       "debug",
-		"PROXY_MDNS_ENABLED":        "false",
+		"PROXY_DISCORD_CLIENT_ID":         "env-client-id",
+		"PROXY_SERVER_PORT":               "7777",
+		"PROXY_AUTH_TOKEN":                "env-token",
+		"PROXY_AUTH_ENABLED":              "true",
+		"PROXY_LOGGING_LEVEL":             "debug",
+		"PROXY_MDNS_ENABLED":              "false",
 		"PROXY_SERVER_READ_TIMEOUT":       "30s",
 		"PROXY_DISCORD_COALESCE_INTERVAL": "10s",
-		"PROXY_SERVER_MAX_WS_CONNECTIONS":  "50",
-		"PROXY_SERVER_RATE_LIMIT_PER_IP":   "20",
-		"PROXY_SERVER_RATE_LIMIT_WINDOW":   "30s",
+		"PROXY_SERVER_MAX_WS_CONNECTIONS": "50",
+		"PROXY_SERVER_RATE_LIMIT_PER_IP":  "20",
+		"PROXY_SERVER_RATE_LIMIT_WINDOW":  "30s",
 	}
 
 	for k, v := range envVars {

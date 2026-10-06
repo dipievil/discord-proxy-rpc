@@ -2,6 +2,7 @@ package server
 
 import (
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -11,6 +12,9 @@ type RateLimiter struct {
 	visitors map[string]*visitor
 	rate     int
 	window   time.Duration
+	stop     chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 type visitor struct {
@@ -18,14 +22,31 @@ type visitor struct {
 	lastSeen time.Time
 }
 
+// NewRateLimiter creates an IP-based rate limiter allowing rate requests per
+// window. A background goroutine periodically evicts expired entries; it is
+// only started when window is positive and must be released with Stop.
 func NewRateLimiter(rate int, window time.Duration) *RateLimiter {
 	rl := &RateLimiter{
 		visitors: make(map[string]*visitor),
 		rate:     rate,
 		window:   window,
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
 	}
-	go rl.cleanup()
+	if window > 0 {
+		go rl.cleanup()
+	} else {
+		close(rl.done)
+	}
 	return rl
+}
+
+// Stop terminates the background cleanup goroutine and waits for it to exit.
+// It is idempotent and safe to call concurrently, so callers can defer it or
+// invoke it on shutdown.
+func (rl *RateLimiter) Stop() {
+	rl.stopOnce.Do(func() { close(rl.stop) })
+	<-rl.done
 }
 
 func (rl *RateLimiter) Allow(ip string) bool {
@@ -48,15 +69,27 @@ func (rl *RateLimiter) Allow(ip string) bool {
 }
 
 func (rl *RateLimiter) cleanup() {
+	defer close(rl.done)
+
+	ticker := time.NewTicker(rl.window)
+	defer ticker.Stop()
 	for {
-		time.Sleep(rl.window)
-		rl.mu.Lock()
-		for ip, v := range rl.visitors {
-			if time.Since(v.lastSeen) > rl.window {
-				delete(rl.visitors, ip)
-			}
+		select {
+		case <-ticker.C:
+			rl.evictExpired()
+		case <-rl.stop:
+			return
 		}
-		rl.mu.Unlock()
+	}
+}
+
+func (rl *RateLimiter) evictExpired() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	for ip, v := range rl.visitors {
+		if time.Since(v.lastSeen) > rl.window {
+			delete(rl.visitors, ip)
+		}
 	}
 }
 
@@ -98,8 +131,9 @@ func (ct *ConnectionTracker) Count() int {
 
 func extractIP(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr
+	if err == nil {
+		return host
 	}
-	return host
+	// No port present: a bare IPv6 literal may still carry brackets.
+	return strings.TrimSuffix(strings.TrimPrefix(addr, "["), "]")
 }

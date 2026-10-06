@@ -22,6 +22,7 @@ func newTestHTTPServer(t *testing.T, opts ...ServerOption) (*Server, *httptest.S
 	ts := httptest.NewServer(srv)
 	return srv, ts, hub, func() {
 		ts.Close()
+		srv.Close()
 		cancel()
 	}
 }
@@ -586,5 +587,199 @@ func TestAPIErrorCodesInAuthResponse(t *testing.T) {
 	}
 	if apiErr.Code != ErrCodeUnauthorized {
 		t.Errorf("error code = %q, want %q", apiErr.Code, ErrCodeUnauthorized)
+	}
+}
+
+// waitFor polls cond until it holds or the timeout elapses, so tests do not
+// depend on goroutine scheduling with fixed sleeps.
+func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out after %v waiting for %s", timeout, desc)
+}
+
+func wsTestURL(ts *httptest.Server) string {
+	return "ws" + ts.URL[4:] + "/ws"
+}
+
+func TestRateLimitWSUpgrade(t *testing.T) {
+	rl := NewRateLimiter(2, time.Minute)
+	_, ts, _, cleanup := newTestHTTPServer(t, WithRateLimiter(rl))
+	defer cleanup()
+
+	wsURL := wsTestURL(ts)
+	for i := 0; i < 2; i++ {
+		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+		if err != nil {
+			t.Fatalf("dial %d: %v", i+1, err)
+		}
+		conn.Close()
+	}
+
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("expected rate limit rejection for third connection from same IP")
+	}
+	if resp == nil {
+		t.Fatal("expected an HTTP response on rate limit rejection")
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
+	}
+
+	var apiErr APIError
+	if err := json.NewDecoder(resp.Body).Decode(&apiErr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if apiErr.Code != ErrCodeRateLimited {
+		t.Errorf("error code = %q, want %q", apiErr.Code, ErrCodeRateLimited)
+	}
+}
+
+func TestConnectionTrackerRejects(t *testing.T) {
+	ct := NewConnectionTracker(1)
+	_, ts, _, cleanup := newTestHTTPServer(t, WithConnectionTracker(ct))
+	defer cleanup()
+
+	wsURL := wsTestURL(ts)
+	conn1, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("first dial: %v", err)
+	}
+	defer conn1.Close()
+
+	waitFor(t, 2*time.Second, "first connection tracked", func() bool {
+		return ct.Count() == 1
+	})
+
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("expected rejection when max connections reached")
+	}
+	if resp == nil {
+		t.Fatal("expected an HTTP response when max connections reached")
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+
+	var apiErr APIError
+	if err := json.NewDecoder(resp.Body).Decode(&apiErr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if apiErr.Code != ErrCodeTooManyConns {
+		t.Errorf("error code = %q, want %q", apiErr.Code, ErrCodeTooManyConns)
+	}
+}
+
+func TestConnectionTrackerAllowsAfterRemove(t *testing.T) {
+	ct := NewConnectionTracker(1)
+	_, ts, _, cleanup := newTestHTTPServer(t, WithConnectionTracker(ct))
+	defer cleanup()
+
+	wsURL := wsTestURL(ts)
+	conn1, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("first dial: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, "first connection tracked", func() bool {
+		return ct.Count() == 1
+	})
+
+	conn1.Close()
+	waitFor(t, 2*time.Second, "disconnect to decrement tracker", func() bool {
+		return ct.Count() == 0
+	})
+
+	conn2, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("second dial after first closed: %v", err)
+	}
+	defer conn2.Close()
+
+	waitFor(t, 2*time.Second, "second connection tracked", func() bool {
+		return ct.Count() == 1
+	})
+}
+
+func TestHTTPBodySizeLimitRejectsOversizedBody(t *testing.T) {
+	_, ts, _, cleanup := newTestHTTPServer(t)
+	defer cleanup()
+
+	body := strings.NewReader(strings.Repeat("x", 2*1024*1024))
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/presence", body)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+
+	var apiErr APIError
+	if err := json.NewDecoder(resp.Body).Decode(&apiErr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if apiErr.Code != ErrCodePayloadTooLarge {
+		t.Errorf("error code = %q, want %q", apiErr.Code, ErrCodePayloadTooLarge)
+	}
+}
+
+func TestHTTPBodySizeLimitAcceptsWithinLimit(t *testing.T) {
+	_, ts, _, cleanup := newTestHTTPServer(t,
+		WithGetIPCState(func() string { return string(StateConnected) }),
+	)
+	defer cleanup()
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/presence",
+		strings.NewReader(`{"details":"hello"}`))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestHTTPBodySizeLimitAllowsNormalGET(t *testing.T) {
+	_, ts, _, cleanup := newTestHTTPServer(t)
+	defer cleanup()
+
+	for _, path := range []string{"/health", "/healthz", "/readyz", "/api/presence", "/api/state"} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("GET %s status = %d, want 200 or 503", path, resp.StatusCode)
+		}
 	}
 }

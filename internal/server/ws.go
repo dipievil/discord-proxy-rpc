@@ -64,7 +64,8 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.connTracker != nil && !h.connTracker.CanConnect() {
 		h.logger.Warn("WebSocket connection rejected: max connections reached",
 			zap.Int("max", h.connTracker.maxConn))
-		http.Error(w, "max connections reached", http.StatusServiceUnavailable)
+		writeAPIError(w, h.logger, http.StatusServiceUnavailable,
+			ErrCodeTooManyConns, "max connections reached")
 		return
 	}
 
