@@ -357,6 +357,7 @@ Current state response:
 | `make dev` | Run with hot reload via Air (if installed) |
 | `make release` | Build and publish via GoReleaser |
 | `make clean` | Remove build artifacts |
+| `make e2e` | Run end-to-end tests (requires GCC for race detector) |
 
 ### Release process
 
