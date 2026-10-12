@@ -183,7 +183,7 @@ func TestFullProxyShutdownSequence(t *testing.T) {
 	hub.Close()
 	hubCancel()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	shutdownCancel := func() {} // no-op since httptest.Server doesn't have Shutdown method
 	defer shutdownCancel()
 
 	// Note: httptest.Server doesn't have Shutdown method, but Close() is sufficient for test
