@@ -45,6 +45,7 @@ func main() {
 	defer presence.Stop()
 
 	hub := server.NewHub(logger)
+	hub.ClientID = cfg.Discord.ClientID
 	go hub.Run(ctx)
 
 	presence.Subscribe(func(update state.PresenceUpdate) {
