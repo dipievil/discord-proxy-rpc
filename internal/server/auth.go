@@ -57,3 +57,32 @@ func extractBearerToken(r *http.Request) string {
 
 	return token
 }
+
+// BearerAuthFunc returns a func(*http.Request) bool that validates
+// the Authorization header against the configured bearer token.
+// Intended for WebSocket upgrade authentication where a simple
+// boolean allow/deny is needed without writing HTTP responses.
+func BearerAuthFunc(cfg config.AuthConfig, logger *zap.Logger) func(*http.Request) bool {
+	return func(r *http.Request) bool {
+		if !cfg.Enabled {
+			return true
+		}
+
+		token := extractBearerToken(r)
+		if token == "" {
+			logger.Debug("auth: missing or malformed Authorization header",
+				zap.String("remote", r.RemoteAddr),
+			)
+			return false
+		}
+
+		if subtle.ConstantTimeCompare([]byte(token), []byte(cfg.Token)) != 1 {
+			logger.Debug("auth: invalid token",
+				zap.String("remote", r.RemoteAddr),
+			)
+			return false
+		}
+
+		return true
+	}
+}

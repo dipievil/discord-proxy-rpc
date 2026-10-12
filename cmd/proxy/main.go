@@ -2,12 +2,10 @@ package main
 
 import (
 	"context"
-	"crypto/subtle"
 	"fmt"
 	"log"
 	"net/http"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -64,7 +62,7 @@ func main() {
 		server.WithConnectionTracker(server.NewConnectionTracker(cfg.Server.MaxWSConnections)),
 	}
 	if cfg.Auth.Enabled {
-		opts = append(opts, server.WithAuth(newAuthFunc(cfg.Auth.Token)))
+		opts = append(opts, server.WithAuth(server.BearerAuthFunc(cfg.Auth, logger)))
 	}
 
 	httpServer := server.NewServer(hub, logger, opts...)
@@ -142,23 +140,5 @@ func runIPCEventLoop(ctx context.Context, client *ipc.Client, presence *state.Pr
 		}
 
 		hub.Broadcast(server.NewStateMessage(server.StateReconnecting))
-	}
-}
-
-func newAuthFunc(token string) func(*http.Request) bool {
-	return func(r *http.Request) bool {
-		auth := r.Header.Get("Authorization")
-		if auth == "" {
-			return false
-		}
-		parts := strings.SplitN(auth, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
-			return false
-		}
-		t := strings.TrimSpace(parts[1])
-		if t == "" {
-			return false
-		}
-		return subtle.ConstantTimeCompare([]byte(t), []byte(token)) == 1
 	}
 }
