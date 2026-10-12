@@ -14,6 +14,7 @@ const (
 	MsgTypeCurrent    = "current"
 	MsgTypeSubscribe  = "subscribe"
 	MsgTypeGetCurrent = "get_current"
+	MsgTypeError      = "error"
 )
 
 type ConnectionState string
@@ -42,7 +43,7 @@ func (m *ServerMessage) UnmarshalJSON(data []byte) error {
 	}
 
 	switch m.Type {
-	case MsgTypePresence, MsgTypeCurrent:
+	case MsgTypePresence, MsgTypeCurrent, MsgTypeError:
 		if m.Payload == nil {
 			return fmt.Errorf("message type %q requires payload", m.Type)
 		}
@@ -141,6 +142,19 @@ func NewSubscribeMessage(events []string) (ClientMessage, error) {
 
 func NewGetCurrentMessage() ClientMessage {
 	return ClientMessage{Type: MsgTypeGetCurrent}
+}
+
+type ErrorPayload struct {
+	Code    ErrorCode `json:"code"`
+	Message string    `json:"message"`
+}
+
+func NewErrorMessage(code ErrorCode, message string) (ServerMessage, error) {
+	payload, err := json.Marshal(ErrorPayload{Code: code, Message: message})
+	if err != nil {
+		return ServerMessage{}, fmt.Errorf("marshalling error payload: %w", err)
+	}
+	return ServerMessage{Type: MsgTypeError, Payload: payload}, nil
 }
 
 func ParseServerMessage(data []byte) (*ServerMessage, error) {

@@ -101,6 +101,18 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
 { "type": "get_current" }
 ```
 
+**Server → Client (error response)**
+
+Error frames are sent in direct response to a client message that could not be processed. They do not close the connection; the client may continue sending messages.
+
+```json
+{ "type": "error", "payload": { "code": "MSG_001", "message": "invalid message: ..." } }
+```
+
+| Code | Constant | Description |
+|------|----------|-------------|
+| `MSG_001` | `ErrCodeInvalidMessage` | Malformed JSON, missing/unknown `type`, unknown event in `subscribe`, or any parse failure |
+
 **Activity Object** (subset of Discord RPC spec)
 
 ```json

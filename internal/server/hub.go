@@ -194,6 +194,17 @@ func (c *Client) ReadPump() {
 		msg, err := ParseClientMessage(data)
 		if err != nil {
 			c.hub.logger.Warn("invalid client message", zap.Error(err), zap.String("client", c.id))
+			errMsg, err := NewErrorMessage(ErrCodeInvalidMessage, err.Error())
+			if err != nil {
+				c.hub.logger.Error("failed to create error message", zap.Error(err))
+				continue
+			}
+			errData, err := json.Marshal(errMsg)
+			if err != nil {
+				c.hub.logger.Error("failed to marshal error message", zap.Error(err))
+				continue
+			}
+			c.SendMessage(errData)
 			continue
 		}
 
@@ -220,6 +231,19 @@ func (c *Client) ReadPump() {
 				}
 				c.SendMessage(respData)
 			}
+		default:
+			c.hub.logger.Warn("unknown message type", zap.String("type", msg.Type), zap.String("client", c.id))
+			errMsg, err := NewErrorMessage(ErrCodeInvalidMessage, fmt.Sprintf("unknown message type: %q", msg.Type))
+			if err != nil {
+				c.hub.logger.Error("failed to create error message", zap.Error(err))
+				continue
+			}
+			errData, err := json.Marshal(errMsg)
+			if err != nil {
+				c.hub.logger.Error("failed to marshal error message", zap.Error(err))
+				continue
+			}
+			c.SendMessage(errData)
 		}
 	}
 }
