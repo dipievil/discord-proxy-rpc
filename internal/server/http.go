@@ -106,6 +106,10 @@ const maxRequestBodyBytes = 1 << 20
 // mux. Declared oversized bodies are rejected up front with 413; bodies of
 // unknown length are truncated by MaxBytesReader so a read past the limit
 // fails instead of buffering indefinitely.
+// RecoveryMiddleware wraps the mux to catch panics from any HTTP handler
+// (including the dashboard, REST endpoints, and health checks). The WebSocket
+// handler has its own inner recover; it catches panics first so the outer
+// middleware never sees them — no problematic double-wrap.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength > maxRequestBodyBytes {
 		s.logger.Warn("request body too large",
@@ -122,7 +126,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	}
 
-	s.mux.ServeHTTP(w, r)
+	RecoveryMiddleware(s.logger, s.mux).ServeHTTP(w, r)
 }
 
 // Close releases resources owned by the server, currently the rate limiter's
