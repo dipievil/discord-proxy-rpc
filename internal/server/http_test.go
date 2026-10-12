@@ -561,6 +561,60 @@ func TestRecoveryMiddlewareLetsNormalRequestsThrough(t *testing.T) {
 	}
 }
 
+func TestServerRecoveryMiddlewareIntegration(t *testing.T) {
+	// This test verifies that RecoveryMiddleware is wired into Server.ServeHTTP
+	// by registering a test route that panics and confirming the middleware
+	// catches it and returns the standard INT_001 error response.
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	// Register a test route on the server's mux that panics.
+	// We access the unexported mux via a test-only helper pattern:
+	// create a new server, then use reflection or a test hook.
+	// Since mux is unexported, we test via the existing Server by
+	// adding a handler that panics through a custom ServerOption.
+	panicked := false
+	testSrv := NewServer(hub, zap.NewNop(),
+		WithGetCurrentPresence(func() types.Activity {
+			if !panicked {
+				panicked = true
+				panic("test panic in presence handler")
+			}
+			return types.Activity{}
+		}),
+	)
+
+	ts := httptest.NewServer(testSrv)
+	defer ts.Close()
+
+	// First request triggers the panic
+	resp, err := http.Get(ts.URL + "/api/presence")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var apiErr APIError
+	if err := json.NewDecoder(resp.Body).Decode(&apiErr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if apiErr.Code != ErrCodeInternal {
+		t.Errorf("error code = %q, want %q", apiErr.Code, ErrCodeInternal)
+	}
+	if apiErr.Message != "internal server error" {
+		t.Errorf("error message = %q, want %q", apiErr.Message, "internal server error")
+	}
+}
+
 func TestAPIErrorCodesInAuthResponse(t *testing.T) {
 	hub, cancel := newTestHub(t)
 	defer cancel()

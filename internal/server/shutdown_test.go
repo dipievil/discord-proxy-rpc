@@ -183,11 +183,11 @@ func TestFullProxyShutdownSequence(t *testing.T) {
 	hub.Close()
 	hubCancel()
 
-	shutdownCancel := func() {} // no-op since httptest.Server doesn't have Shutdown method
-	defer shutdownCancel()
-
-	// Note: httptest.Server doesn't have Shutdown method, but Close() is sufficient for test
+	// Gracefully shutdown HTTP server (httptest.Server.Close() is sufficient for tests)
 	ts.Close()
+
+	cancel()
+	presence.Stop()
 
 	cancel()
 	presence.Stop()
@@ -195,7 +195,7 @@ func TestFullProxyShutdownSequence(t *testing.T) {
 	// Verify no goroutine leak from our components
 	runtime.GC()
 	time.Sleep(100 * time.Millisecond)
-}
+} // trigger CI
 
 func TestMDNSDeregistrationOnShutdown(t *testing.T) {
 	// This test verifies that mDNS advertiser Shutdown is called during shutdown.
