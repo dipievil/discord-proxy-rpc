@@ -252,13 +252,47 @@ mDNS auto-discovery works out of the box on most networks. On Linux, ensure Avah
 
 ### REST Endpoints
 
-| Route | Method | Description |
-|-------|--------|-------------|
-| `/` | GET | Dashboard SPA |
-| `/api/presence` | GET | Current presence as JSON snapshot |
-| `/api/state` | GET | IPC connection state as JSON |
-| `/health` | GET | Liveness probe, returns `200 OK` |
-| `{ws_path}` | GET | WebSocket upgrade endpoint (default: `/ws`) |
+| Route | Method | Description | Response (200) | Response (503) |
+|-------|--------|-------------|----------------|----------------|
+| `/` | GET | Dashboard SPA | `text/html` | — |
+| `/api/presence` | GET | Current presence as JSON snapshot | `Activity` object | — |
+| `/api/state` | GET | IPC connection state as JSON | `{"status":"connected\|disconnected\|reconnecting"}` | — |
+| `/health` | GET | **Rich liveness probe** — includes IPC state | `{"status":"ok","ipc":"<state>"}` | — |
+| `/healthz` | GET | **Minimal liveness probe** (k8s-compatible) | `{"status":"ok"}` | — |
+| `/readyz` | GET | **Readiness probe** — reflects IPC connectivity | `{"status":"ok","ipc":"connected"}` | `{"status":"not ready","ipc":"disconnected"}` |
+| `{ws_path}` | GET | WebSocket upgrade endpoint (default: `/ws`) | `101 Switching Protocols` | — |
+
+**Endpoint rationale:**
+- `/health` — Rich variant for debugging/monitoring; always returns 200 with IPC state embedded
+- `/healthz` — Minimal, spec-conformant liveness probe for Kubernetes; always returns 200 if process is alive
+- `/readyz` — Readiness probe for Kubernetes; returns 200 only when IPC is connected, 503 otherwise
+
+#### Kubernetes Probes
+
+For Kubernetes deployments, use `/healthz` for liveness and `/readyz` for readiness:
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8765
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8765
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+```
+
+- **Liveness** (`/healthz`): Process is alive. Restarts container if probe fails.
+- **Readiness** (`/readyz`): Discord IPC is connected. Removes pod from Service endpoints if probe fails (traffic stops routing until Discord reconnects).
 
 ### WebSocket Protocol
 
@@ -385,7 +419,9 @@ Releases are automated via GitHub Actions + GoReleaser:
 
 - Check that the proxy is running and port 8765 is not blocked.
 - If using a firewall, allow inbound TCP on port 8765.
-- Try `curl http://localhost:8765/health` -- should return `200 OK`.
+- Try `curl http://localhost:8765/health` — should return `200 OK` with IPC state.
+- Try `curl http://localhost:8765/healthz` — minimal liveness check, returns `200 OK`.
+- Try `curl http://localhost:8765/readyz` — readiness check, returns `200 OK` if IPC connected, `503` if disconnected.
 - Open browser developer tools (F12) and check the Console for WebSocket errors.
 
 ### 3. mDNS not discovered by LAN clients
