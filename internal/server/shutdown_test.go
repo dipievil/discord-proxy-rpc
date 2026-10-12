@@ -198,7 +198,7 @@ func TestFullProxyShutdownSequence(t *testing.T) {
 	// Verify no goroutine leak from our components
 	runtime.GC()
 	time.Sleep(100 * time.Millisecond)
-}
+} // trigger CI
 
 func TestMDNSDeregistrationOnShutdown(t *testing.T) {
 	// This test verifies that mDNS advertiser Shutdown is called during shutdown.
