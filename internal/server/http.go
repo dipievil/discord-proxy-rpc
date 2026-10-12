@@ -18,6 +18,8 @@ type Server struct {
 	wsPath             string
 	getCurrentPresence func() types.Activity
 	getIPCState        func() string
+	rateLimiter        *RateLimiter
+	connTracker        *ConnectionTracker
 }
 
 type ServerOption func(*Server)
@@ -48,6 +50,18 @@ func WithWSPath(path string) ServerOption {
 	}
 }
 
+func WithRateLimiter(rl *RateLimiter) ServerOption {
+	return func(s *Server) {
+		s.rateLimiter = rl
+	}
+}
+
+func WithConnectionTracker(ct *ConnectionTracker) ServerOption {
+	return func(s *Server) {
+		s.connTracker = ct
+	}
+}
+
 func NewServer(hub *Hub, logger *zap.Logger, opts ...ServerOption) *Server {
 	s := &Server{
 		mux:                http.NewServeMux(),
@@ -64,6 +78,10 @@ func NewServer(hub *Hub, logger *zap.Logger, opts ...ServerOption) *Server {
 		opt(s)
 	}
 
+	if s.connTracker != nil {
+		s.wsHandler = s.wsHandler.WithConnectionTracker(s.connTracker)
+	}
+
 	s.hub.GetCurrentPresence = s.getCurrentPresence
 
 	s.registerRoutes()
@@ -72,7 +90,7 @@ func NewServer(hub *Hub, logger *zap.Logger, opts ...ServerOption) *Server {
 
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/", s.handleDashboard)
-	s.mux.HandleFunc(s.wsPath, s.wsHandler.ServeHTTP)
+	s.mux.HandleFunc(s.wsPath, s.rateLimitWS(s.wsHandler.ServeHTTP))
 	s.mux.HandleFunc("/api/presence", s.handlePresence)
 	s.mux.HandleFunc("/api/state", s.handleState)
 	s.mux.HandleFunc("/health", s.handleHealth)
@@ -80,8 +98,57 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/readyz", s.handleReadyz)
 }
 
+// maxRequestBodyBytes caps the request body accepted on any route, so a
+// malicious client cannot exhaust memory by streaming an unbounded payload.
+const maxRequestBodyBytes = 1 << 20
+
+// ServeHTTP enforces the request body size limit before dispatching to the
+// mux. Declared oversized bodies are rejected up front with 413; bodies of
+// unknown length are truncated by MaxBytesReader so a read past the limit
+// fails instead of buffering indefinitely.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.ContentLength > maxRequestBodyBytes {
+		s.logger.Warn("request body too large",
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.Path),
+			zap.Int64("content_length", r.ContentLength),
+		)
+		writeAPIError(w, s.logger, http.StatusRequestEntityTooLarge,
+			ErrCodePayloadTooLarge, "request body too large")
+		return
+	}
+
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	}
+
 	s.mux.ServeHTTP(w, r)
+}
+
+// Close releases resources owned by the server, currently the rate limiter's
+// background cleanup goroutine. It is idempotent.
+func (s *Server) Close() {
+	if s.rateLimiter != nil {
+		s.rateLimiter.Stop()
+	}
+}
+
+func (s *Server) rateLimitWS(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.rateLimiter != nil {
+			ip := extractIP(r.RemoteAddr)
+			if !s.rateLimiter.Allow(ip) {
+				s.logger.Warn("WebSocket upgrade rate limited",
+					zap.String("ip", ip),
+					zap.String("remote", r.RemoteAddr),
+				)
+				writeAPIError(w, s.logger, http.StatusTooManyRequests,
+					ErrCodeRateLimited, "rate limit exceeded")
+				return
+			}
+		}
+		next(w, r)
+	}
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {

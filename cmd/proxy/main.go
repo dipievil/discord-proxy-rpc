@@ -60,12 +60,15 @@ func main() {
 		server.WithGetCurrentPresence(presence.Current),
 		server.WithGetIPCState(func() string { return client.State().String() }),
 		server.WithWSPath(cfg.Server.WsPath),
+		server.WithRateLimiter(server.NewRateLimiter(cfg.Server.RateLimitPerIP, cfg.Server.RateLimitWindow)),
+		server.WithConnectionTracker(server.NewConnectionTracker(cfg.Server.MaxWSConnections)),
 	}
 	if cfg.Auth.Enabled {
 		opts = append(opts, server.WithAuth(newAuthFunc(cfg.Auth.Token)))
 	}
 
 	httpServer := server.NewServer(hub, logger, opts...)
+	defer httpServer.Close()
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),

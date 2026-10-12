@@ -11,10 +11,13 @@ import (
 type ErrorCode string
 
 const (
-	ErrCodeUnauthorized   ErrorCode = "AUTH_001"
-	ErrCodeInvalidMessage ErrorCode = "MSG_001"
-	ErrCodeInternal       ErrorCode = "INT_001"
-	ErrCodeNotFound       ErrorCode = "NF_001"
+	ErrCodeUnauthorized    ErrorCode = "AUTH_001"
+	ErrCodeInvalidMessage  ErrorCode = "MSG_001"
+	ErrCodeInternal        ErrorCode = "INT_001"
+	ErrCodeNotFound        ErrorCode = "NF_001"
+	ErrCodePayloadTooLarge ErrorCode = "REQ_001"
+	ErrCodeRateLimited     ErrorCode = "REQ_002"
+	ErrCodeTooManyConns    ErrorCode = "REQ_003"
 )
 
 type APIError struct {
