@@ -69,13 +69,20 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
 
 #### HTTP Endpoints
 
-| Route | Method | Description |
-|-------|--------|-------------|
-| `/` | GET | Dashboard SPA (embedded static files) |
-| `/ws` | GET | WebSocket upgrade → API |
-| `/api/presence` | GET | Current presence JSON (snapshot) |
-| `/api/state` | GET | IPC connection state JSON |
-| `/health` | GET | Liveness probe (returns 200 OK) |
+| Route | Method | Description | Response (200) | Response (503) |
+|-------|--------|-------------|----------------|----------------|
+| `/` | GET | Dashboard SPA (embedded static files) | `text/html` | — |
+| `/ws` | GET | WebSocket upgrade → API | `101 Switching Protocols` | — |
+| `/api/presence` | GET | Current presence JSON (snapshot) | `Activity` object | — |
+| `/api/state` | GET | IPC connection state JSON | `{"status":"connected\|disconnected\|reconnecting"}` | — |
+| `/health` | GET | **Rich liveness probe** — includes IPC state | `{"status":"ok","ipc":"<state>"}` | — |
+| `/healthz` | GET | **Minimal liveness probe** (k8s-compatible) | `{"status":"ok"}` | — |
+| `/readyz` | GET | **Readiness probe** — reflects IPC connectivity | `{"status":"ok","ipc":"connected"}` | `{"status":"not ready","ipc":"disconnected"}` |
+
+**Endpoint rationale:**
+- `/health` — Rich variant for debugging/monitoring; always returns 200 with IPC state embedded
+- `/healthz` — Minimal, spec-conformant liveness probe for Kubernetes; always returns 200 if process is alive
+- `/readyz` — Readiness probe for Kubernetes; returns 200 only when IPC is connected, 503 otherwise
 
 #### WebSocket Protocol
 

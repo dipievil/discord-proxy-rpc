@@ -155,3 +155,118 @@ func assertUnauthorized(t *testing.T, rec *httptest.ResponseRecorder) {
 		t.Errorf("error message = %q, want %q", apiErr.Message, "unauthorized")
 	}
 }
+
+func TestBearerAuthFunc(t *testing.T) {
+	tests := []struct {
+		name           string
+		authEnabled    bool
+		configuredToken string
+		authHeader     string
+		wantAllow      bool
+	}{
+		{
+			name:            "auth disabled - no header",
+			authEnabled:     false,
+			configuredToken: "secret",
+			authHeader:      "",
+			wantAllow:       true,
+		},
+		{
+			name:            "auth disabled - with header",
+			authEnabled:     false,
+			configuredToken: "secret",
+			authHeader:      "Bearer anything",
+			wantAllow:       true,
+		},
+		{
+			name:            "missing header",
+			authEnabled:     true,
+			configuredToken: "my-secret-token",
+			authHeader:      "",
+			wantAllow:       false,
+		},
+		{
+			name:            "empty token (Bearer with space)",
+			authEnabled:     true,
+			configuredToken: "my-secret-token",
+			authHeader:      "Bearer ",
+			wantAllow:       false,
+		},
+		{
+			name:            "wrong token",
+			authEnabled:     true,
+			configuredToken: "my-secret-token",
+			authHeader:      "Bearer wrong-token",
+			wantAllow:       false,
+		},
+		{
+			name:            "correct token - lowercase bearer",
+			authEnabled:     true,
+			configuredToken: "my-secret-token",
+			authHeader:      "bearer my-secret-token",
+			wantAllow:       true,
+		},
+		{
+			name:            "correct token - mixed case Bearer",
+			authEnabled:     true,
+			configuredToken: "my-secret-token",
+			authHeader:      "Bearer my-secret-token",
+			wantAllow:       true,
+		},
+		{
+			name:            "correct token - uppercase BEARER",
+			authEnabled:     true,
+			configuredToken: "my-secret-token",
+			authHeader:      "BEARER my-secret-token",
+			wantAllow:       true,
+		},
+		{
+			name:            "extra whitespace around token",
+			authEnabled:     true,
+			configuredToken: "my-secret-token",
+			authHeader:      "Bearer  my-secret-token  ",
+			wantAllow:       true,
+		},
+		{
+			name:            "missing scheme (just token)",
+			authEnabled:     true,
+			configuredToken: "my-secret-token",
+			authHeader:      "my-secret-token",
+			wantAllow:       false,
+		},
+		{
+			name:            "non-bearer scheme (Basic)",
+			authEnabled:     true,
+			configuredToken: "my-secret-token",
+			authHeader:      "Basic dXNlcjpwYXNz",
+			wantAllow:       false,
+		},
+		{
+			name:            "non-bearer scheme (Token)",
+			authEnabled:     true,
+			configuredToken: "my-secret-token",
+			authHeader:      "Token my-secret-token",
+			wantAllow:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.AuthConfig{
+				Enabled: tt.authEnabled,
+				Token:   tt.configuredToken,
+			}
+			authFn := BearerAuthFunc(cfg, zap.NewNop())
+
+			req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+
+			got := authFn(req)
+			if got != tt.wantAllow {
+				t.Errorf("BearerAuthFunc() = %v, want %v", got, tt.wantAllow)
+			}
+		})
+	}
+}
