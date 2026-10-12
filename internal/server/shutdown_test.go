@@ -183,11 +183,8 @@ func TestFullProxyShutdownSequence(t *testing.T) {
 	hub.Close()
 	hubCancel()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer shutdownCancel()
-
-	// Gracefully shutdown HTTP server with timeout (httptest.Server has Shutdown since Go 1.9)
-	ts.Shutdown(shutdownCtx)
+	// Gracefully shutdown HTTP server (httptest.Server.Close() is sufficient for tests)
+	ts.Close()
 
 	cancel()
 	presence.Stop()
