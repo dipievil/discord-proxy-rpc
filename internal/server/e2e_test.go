@@ -166,3 +166,32 @@ func TestE2EServerShutdownCleansUp(t *testing.T) {
 		conn.Close()
 	}
 }
+
+func TestE2EConfigClientIDInStateMessage(t *testing.T) {
+	// This test exercises the production bootstrap path: hub.ClientID is set
+	// from config (as main.go does) and the emitted state message includes it.
+	testClientID := "test-discord-client-id-12345"
+
+	hub, cancel, ts := newTestServer(t)
+	hub.ClientID = testClientID // simulates main.go wiring: hub.ClientID = cfg.Discord.ClientID
+	defer cancel()
+
+	conn := testDial(t, ts)
+	defer conn.Close()
+	waitForClientCount(t, hub, 1)
+
+	testSubscribe(t, conn, []string{MsgTypeState})
+
+	hub.Broadcast(NewStateMessage(StateConnected))
+
+	msg := testRead(t, conn)
+	if msg.Type != MsgTypeState {
+		t.Errorf("type = %q, want %q", msg.Type, MsgTypeState)
+	}
+	if msg.Status != StateConnected {
+		t.Errorf("status = %q, want %q", msg.Status, StateConnected)
+	}
+	if msg.ClientID != testClientID {
+		t.Errorf("ClientID = %q, want %q (config client ID should be wired to state message)", msg.ClientID, testClientID)
+	}
+}
