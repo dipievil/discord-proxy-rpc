@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -605,5 +606,222 @@ func TestHubCloseConcurrentWithContextCancel(t *testing.T) {
 			cancel()
 		}()
 		wg.Wait()
+	}
+}
+
+func TestClientReadPumpMalformedJSON(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	var serverConn *websocket.Conn
+	serverReady := make(chan struct{})
+	inbox := make(chan []byte, 16)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		serverConn = c
+		close(serverReady)
+		for {
+			_, data, err := c.ReadMessage()
+			if err != nil {
+				return
+			}
+			inbox <- data
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + server.URL[4:]
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	client := NewClient(conn, hub)
+	hub.Register(client)
+	go client.WritePump()
+	go client.ReadPump()
+
+	<-serverReady
+	time.Sleep(50 * time.Millisecond)
+
+	// Send malformed JSON
+	serverConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if err := serverConn.WriteMessage(websocket.TextMessage, []byte("{not valid json")); err != nil {
+		t.Fatalf("WriteMessage: %v", err)
+	}
+
+	select {
+	case received := <-inbox:
+		var resp ServerMessage
+		if err := json.Unmarshal(received, &resp); err != nil {
+			t.Fatalf("Unmarshal error response: %v", err)
+		}
+		if resp.Type != MsgTypeError {
+			t.Errorf("type = %q, want %q", resp.Type, MsgTypeError)
+		}
+		var payload ErrorPayload
+		if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+			t.Fatalf("Unmarshal error payload: %v", err)
+		}
+		if payload.Code != ErrCodeInvalidMessage {
+			t.Errorf("error code = %q, want %q", payload.Code, ErrCodeInvalidMessage)
+		}
+		if payload.Message == "" {
+			t.Error("error message should not be empty")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for error response")
+	}
+}
+
+func TestClientReadPumpUnknownMessageType(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	var serverConn *websocket.Conn
+	serverReady := make(chan struct{})
+	inbox := make(chan []byte, 16)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		serverConn = c
+		close(serverReady)
+		for {
+			_, data, err := c.ReadMessage()
+			if err != nil {
+				return
+			}
+			inbox <- data
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + server.URL[4:]
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	client := NewClient(conn, hub)
+	hub.Register(client)
+	go client.WritePump()
+	go client.ReadPump()
+
+	<-serverReady
+	time.Sleep(50 * time.Millisecond)
+
+	// Send unknown message type
+	unknownMsg := map[string]string{"type": "unknown_type"}
+	data, _ := json.Marshal(unknownMsg)
+	serverConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if err := serverConn.WriteMessage(websocket.TextMessage, data); err != nil {
+		t.Fatalf("WriteMessage: %v", err)
+	}
+
+	select {
+	case received := <-inbox:
+		var resp ServerMessage
+		if err := json.Unmarshal(received, &resp); err != nil {
+			t.Fatalf("Unmarshal error response: %v", err)
+		}
+		if resp.Type != MsgTypeError {
+			t.Errorf("type = %q, want %q", resp.Type, MsgTypeError)
+		}
+		var payload ErrorPayload
+		if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+			t.Fatalf("Unmarshal error payload: %v", err)
+		}
+		if payload.Code != ErrCodeInvalidMessage {
+			t.Errorf("error code = %q, want %q", payload.Code, ErrCodeInvalidMessage)
+		}
+		if !strings.Contains(payload.Message, "unknown_type") {
+			t.Errorf("error message %q should mention unknown type", payload.Message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for error response")
+	}
+}
+
+func TestClientReadPumpUnknownEventType(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	var serverConn *websocket.Conn
+	serverReady := make(chan struct{})
+	inbox := make(chan []byte, 16)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		serverConn = c
+		close(serverReady)
+		for {
+			_, data, err := c.ReadMessage()
+			if err != nil {
+				return
+			}
+			inbox <- data
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + server.URL[4:]
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	client := NewClient(conn, hub)
+	hub.Register(client)
+	go client.WritePump()
+	go client.ReadPump()
+
+	<-serverReady
+	time.Sleep(50 * time.Millisecond)
+
+	// Send subscribe with unknown event type
+	badSub := map[string]any{"type": "subscribe", "events": []string{"presence", "invalid_event"}}
+	data, _ := json.Marshal(badSub)
+	serverConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if err := serverConn.WriteMessage(websocket.TextMessage, data); err != nil {
+		t.Fatalf("WriteMessage: %v", err)
+	}
+
+	select {
+	case received := <-inbox:
+		var resp ServerMessage
+		if err := json.Unmarshal(received, &resp); err != nil {
+			t.Fatalf("Unmarshal error response: %v", err)
+		}
+		if resp.Type != MsgTypeError {
+			t.Errorf("type = %q, want %q", resp.Type, MsgTypeError)
+		}
+		var payload ErrorPayload
+		if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+			t.Fatalf("Unmarshal error payload: %v", err)
+		}
+		if payload.Code != ErrCodeInvalidMessage {
+			t.Errorf("error code = %q, want %q", payload.Code, ErrCodeInvalidMessage)
+		}
+		if !strings.Contains(payload.Message, "invalid_event") {
+			t.Errorf("error message %q should mention invalid event", payload.Message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for error response")
 	}
 }
