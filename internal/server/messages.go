@@ -43,7 +43,7 @@ func (m *ServerMessage) UnmarshalJSON(data []byte) error {
 	}
 
 	switch m.Type {
-	case MsgTypePresence, MsgTypeCurrent:
+	case MsgTypePresence, MsgTypeCurrent, MsgTypeError:
 		if m.Payload == nil {
 			return fmt.Errorf("message type %q requires payload", m.Type)
 		}
