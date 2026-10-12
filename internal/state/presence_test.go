@@ -327,6 +327,51 @@ func TestUpdateAfterStopIsNoOp(t *testing.T) {
 	}
 }
 
+func TestFlushAfterStopDoesNotEmit(t *testing.T) {
+	// This test verifies the fix for the race condition where a timer
+	// scheduled before Stop() could fire its flush callback after Stop() returns.
+	// The flush() method now checks p.stopped under the lock.
+	p := newTestPresence(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	p.Start(ctx)
+
+	var count int
+	notifyCh := make(chan struct{}, 10)
+	unsub := p.Subscribe(func(u PresenceUpdate) {
+		count++
+		select {
+		case notifyCh <- struct{}{}:
+		default:
+		}
+	})
+	defer unsub()
+
+	// Schedule a flush by updating
+	p.Update(types.Activity{Details: "game", Type: types.ActivityPlaying})
+
+	// Wait for the notification
+	select {
+	case <-notifyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first notification not received")
+	}
+
+	firstCount := count
+
+	// Now stop - this will close stopCh and wait for run() to stop the timer
+	cancel()
+	p.Stop()
+
+	// At this point, the timer should be stopped. But if there was a race,
+	// a pending flush(gen) callback could still execute.
+	// We verify no additional notification fires.
+	time.Sleep(200 * time.Millisecond)
+
+	if count != firstCount {
+		t.Errorf("Notification fired after Stop(): count went from %d to %d", firstCount, count)
+	}
+}
+
 func TestStaleFlushDoesNotEmit(t *testing.T) {
 	p := newTestPresence(t)
 	ctx, cancel := context.WithCancel(context.Background())

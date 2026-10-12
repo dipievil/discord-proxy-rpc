@@ -142,7 +142,7 @@ func (p *Presence) notify(update PresenceUpdate) {
 
 func (p *Presence) flush(gen uint64) {
 	p.mu.Lock()
-	if gen != p.gen {
+	if gen != p.gen || p.stopped {
 		p.mu.Unlock()
 		return
 	}
