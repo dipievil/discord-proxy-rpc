@@ -45,7 +45,8 @@ func (h *HealthCheckManager) Start(ctx context.Context) {
 	h.stopCh = make(chan struct{})
 	h.done = make(chan struct{})
 	h.pongCh = make(chan struct{}, 1)
-	go h.run(ctx)
+	done := h.done
+	go h.run(ctx, done)
 }
 
 func (h *HealthCheckManager) Stop() {
@@ -84,11 +85,10 @@ func (h *HealthCheckManager) HandlePong() {
 	}
 }
 
-func (h *HealthCheckManager) run(ctx context.Context) {
+func (h *HealthCheckManager) run(ctx context.Context, done chan struct{}) {
 	h.mu.Lock()
 	stopCh := h.stopCh
 	pongCh := h.pongCh
-	done := h.done
 	h.mu.Unlock()
 
 	defer close(done)
