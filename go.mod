@@ -1,6 +1,6 @@
 module github.com/discord-proxy-rpc/discord-proxy-rpc
 
-go 1.23
+go 1.27
 
 require (
 	github.com/dop251/goja v0.0.0-20241024094426-79f3a7efcdbd

@@ -21,6 +21,8 @@ jobs:
           go-version: "stable"
       - name: Print Go version
         run: go version
+      - name: go mod tidy
+        run: go mod tidy
       - name: go vet
         run: go vet ./...
 
@@ -34,6 +36,8 @@ jobs:
           go-version: "stable"
       - name: Print Go version
         run: go version
+      - name: go mod tidy
+        run: go mod tidy
       - name: Install gcc (for race detector)
         run: sudo apt-get update && sudo apt-get install -y gcc
       - name: Run tests
@@ -50,6 +54,8 @@ jobs:
           go-version: "stable"
       - name: Print Go version
         run: go version
+      - name: go mod tidy
+        run: go mod tidy
       - name: Build binary
         run: make build
       - name: Upload binary artifact
