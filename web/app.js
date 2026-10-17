@@ -5,6 +5,11 @@
     const WS_RECONNECT_MAX = 30000;
     const TIMESTAMP_INTERVAL = 1000;
 
+    const DEFAULT_WS_PATH = '/ws';
+    const SUBPROTOCOL_TOKEN_PREFIX = 'proxy-token-';
+    const TOKEN_STORAGE_KEY = 'proxy-rpc-token';
+    const B64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
     const ACTIVITY_TYPE_LABELS = {
         0: 'Playing',
         1: 'Streaming',
@@ -23,13 +28,123 @@
     let currentActivity = null;
     let clientId = null;
     let toastTimer = null;
+    let authToken = null;
+
+    function getWsPath() {
+        try {
+            const meta = document.querySelector('meta[name="proxy-ws-path"]');
+            if (meta && meta.content) return meta.content;
+        } catch (e) {
+            console.warn('[Dashboard] Could not read configured WebSocket path:', e);
+        }
+        return DEFAULT_WS_PATH;
+    }
+
+    // The browser WebSocket API cannot set an Authorization header, so the
+    // bearer token is sent as a subprotocol value, base64url-encoded to stay
+    // within the header's token grammar.
+    function buildSubprotocols(token) {
+        if (!token) return [];
+        return [SUBPROTOCOL_TOKEN_PREFIX + base64UrlEncode(token)];
+    }
+
+    function base64UrlEncode(value) {
+        const bytes = utf8Bytes(value);
+        let encoded = '';
+
+        for (let i = 0; i < bytes.length; i += 3) {
+            const b0 = bytes[i];
+            const b1 = i + 1 < bytes.length ? bytes[i + 1] : null;
+            const b2 = i + 2 < bytes.length ? bytes[i + 2] : null;
+
+            encoded += B64URL_ALPHABET[b0 >> 2];
+            encoded += B64URL_ALPHABET[((b0 & 0x03) << 4) | ((b1 === null ? 0 : b1) >> 4)];
+            if (b1 === null) break;
+            encoded += B64URL_ALPHABET[((b1 & 0x0f) << 2) | ((b2 === null ? 0 : b2) >> 6)];
+            if (b2 === null) break;
+            encoded += B64URL_ALPHABET[b2 & 0x3f];
+        }
+
+        return encoded;
+    }
+
+    function utf8Bytes(value) {
+        const bytes = [];
+        for (let i = 0; i < value.length; i++) {
+            const c = value.charCodeAt(i);
+            if (c < 0x80) {
+                bytes.push(c);
+            } else if (c < 0x800) {
+                bytes.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
+            } else {
+                bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+            }
+        }
+        return bytes;
+    }
+
+    function resolveToken() {
+        const stored = readStoredToken();
+        if (stored) return stored;
+
+        const fromUrl = readUrlToken();
+        if (!fromUrl) return null;
+
+        storeToken(fromUrl);
+        stripTokenFromUrl();
+        return fromUrl;
+    }
+
+    function readStoredToken() {
+        try {
+            if (typeof window !== 'undefined' && window.sessionStorage) {
+                return window.sessionStorage.getItem(TOKEN_STORAGE_KEY);
+            }
+        } catch (e) {
+            console.warn('[Dashboard] Could not read stored token:', e);
+        }
+        return null;
+    }
+
+    function storeToken(token) {
+        try {
+            if (typeof window !== 'undefined' && window.sessionStorage) {
+                window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+            }
+        } catch (e) {
+            console.warn('[Dashboard] Could not persist token:', e);
+        }
+    }
+
+    function readUrlToken() {
+        try {
+            if (typeof URLSearchParams === 'undefined') return null;
+            if (typeof location === 'undefined' || !location.search) return null;
+            return new URLSearchParams(location.search).get('token');
+        } catch (e) {
+            console.warn('[Dashboard] Could not read token from URL:', e);
+            return null;
+        }
+    }
+
+    function stripTokenFromUrl() {
+        try {
+            if (typeof history === 'undefined' || !history.replaceState) return;
+            const url = new URL(location.href);
+            url.searchParams.delete('token');
+            history.replaceState(null, '', url.pathname + url.search + url.hash);
+        } catch (e) {
+            console.warn('[Dashboard] Could not clean token from URL:', e);
+        }
+    }
 
     function connect() {
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const url = protocol + '//' + location.host + '/ws';
+        const url = protocol + '//' + location.host + getWsPath();
+        const subprotocols = buildSubprotocols(authToken);
 
         try {
-            ws = new WebSocket(url);
+            ws = subprotocols.length ? new WebSocket(url, subprotocols) : new WebSocket(url);
         } catch (e) {
             console.error('[Dashboard] WebSocket constructor failed:', e);
             scheduleReconnect();
@@ -45,6 +160,7 @@
                 type: 'subscribe',
                 events: ['presence', 'state']
             }));
+            ws.send(JSON.stringify({ type: 'get_current' }));
         };
 
         ws.onmessage = function (event) {
@@ -79,6 +195,9 @@
         switch (msg.type) {
             case 'presence':
             case 'current':
+                if (msg.client_id) {
+                    clientId = msg.client_id;
+                }
                 currentActivity = msg.payload;
                 renderPresence(msg.payload);
                 break;
@@ -217,24 +336,37 @@
         }
     }
 
-    function updateTimestamps(timestamps) {
-        const now = Math.floor(Date.now() / 1000);
-
-        setText('elapsed', '\u2014');
-        setText('remaining', '\u2014');
+    // Discord IPC timestamps are Unix milliseconds; compare them against the
+    // same unit and convert to whole seconds only for display.
+    function computeTimestamps(timestamps, nowMs) {
+        const result = { elapsed: null, remaining: null, ended: false };
 
         if (timestamps.start) {
-            const elapsed = now - timestamps.start;
-            setText('elapsed', elapsed < 0 ? '\u2014' : formatDuration(elapsed));
+            const elapsed = Math.floor((nowMs - timestamps.start) / 1000);
+            if (elapsed >= 0) result.elapsed = elapsed;
         }
 
         if (timestamps.end) {
-            const remaining = timestamps.end - now;
+            const remaining = Math.floor((timestamps.end - nowMs) / 1000);
             if (remaining <= 0) {
-                setText('remaining', 'Ended');
+                result.ended = true;
             } else {
-                setText('remaining', formatDuration(remaining));
+                result.remaining = remaining;
             }
+        }
+
+        return result;
+    }
+
+    function updateTimestamps(timestamps) {
+        const computed = computeTimestamps(timestamps, Date.now());
+
+        setText('elapsed', computed.elapsed === null ? '\u2014' : formatDuration(computed.elapsed));
+
+        if (computed.ended) {
+            setText('remaining', 'Ended');
+        } else {
+            setText('remaining', computed.remaining === null ? '\u2014' : formatDuration(computed.remaining));
         }
     }
 
@@ -372,6 +504,7 @@
     }
 
     function init() {
+        authToken = resolveToken();
         setupCopyJson();
         setupKeyboardShortcut();
         connect();
@@ -389,7 +522,12 @@
             isCopyShortcut: isCopyShortcut,
             resolveAssetSrc: resolveAssetSrc,
             isSafeImageUrl: isSafeImageUrl,
-            formatDuration: formatDuration
+            formatDuration: formatDuration,
+            computeTimestamps: computeTimestamps,
+            buildSubprotocols: buildSubprotocols,
+            base64UrlEncode: base64UrlEncode,
+            getWsPath: getWsPath,
+            resolveToken: resolveToken
         };
     }
 })();

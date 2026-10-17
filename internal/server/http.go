@@ -2,13 +2,21 @@ package server
 
 import (
 	"encoding/json"
+	"html"
+	"io"
+	"io/fs"
 	"net/http"
+	"strings"
 
 	"go.uber.org/zap"
 
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/pkg/types"
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/web"
 )
+
+// wsPathPlaceholder is replaced in the served dashboard with the configured
+// WebSocket route so the page connects to the right path.
+const wsPathPlaceholder = "__WS_PATH__"
 
 type Server struct {
 	mux                *http.ServeMux
@@ -156,7 +164,31 @@ func (s *Server) rateLimitWS(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+		s.serveDashboardIndex(w)
+		return
+	}
 	http.FileServerFS(web.FS).ServeHTTP(w, r)
+}
+
+// serveDashboardIndex serves the dashboard shell with the configured
+// WebSocket path injected, so a custom server.ws_path works without a client
+// change.
+func (s *Server) serveDashboardIndex(w http.ResponseWriter) {
+	page, err := fs.ReadFile(web.FS, "index.html")
+	if err != nil {
+		s.logger.Error("failed to read dashboard index", zap.Error(err))
+		writeAPIError(w, s.logger, http.StatusInternalServerError, ErrCodeInternal, "internal server error")
+		return
+	}
+
+	body := strings.Replace(string(page), wsPathPlaceholder, html.EscapeString(s.wsPath), 1)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	if _, err := io.WriteString(w, body); err != nil {
+		s.logger.Error("failed to write dashboard index", zap.Error(err))
+	}
 }
 
 func (s *Server) handlePresence(w http.ResponseWriter, r *http.Request) {
