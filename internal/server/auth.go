@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/subtle"
+	"encoding/base64"
 	"net/http"
 	"strings"
 
@@ -9,27 +10,15 @@ import (
 	"go.uber.org/zap"
 )
 
+// AuthMiddleware rejects requests without a valid bearer token. It delegates the
+// decision and the rejection logging to BearerAuthFunc so that HTTP and
+// WebSocket authentication share a single validation path and log severity.
 func AuthMiddleware(cfg config.AuthConfig, logger *zap.Logger) func(http.Handler) http.Handler {
+	allow := BearerAuthFunc(cfg, logger)
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !cfg.Enabled {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			token := extractBearerToken(r)
-			if token == "" {
-				logger.Warn("auth: missing or malformed Authorization header",
-					zap.String("remote", r.RemoteAddr),
-				)
-				writeAPIError(w, logger, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized")
-				return
-			}
-
-			if subtle.ConstantTimeCompare([]byte(token), []byte(cfg.Token)) != 1 {
-				logger.Warn("auth: invalid token",
-					zap.String("remote", r.RemoteAddr),
-				)
+			if !allow(r) {
 				writeAPIError(w, logger, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized")
 				return
 			}
@@ -58,10 +47,42 @@ func extractBearerToken(r *http.Request) string {
 	return token
 }
 
+// subprotocolTokenPrefix marks the WebSocket subprotocol a browser-based client
+// uses to carry its bearer token. The browser WebSocket API cannot set an
+// Authorization header, so the token travels in the subprotocol list instead,
+// base64url-encoded to stay within the header's token grammar.
+const subprotocolTokenPrefix = "proxy-token-"
+
+// extractSubprotocolToken returns the bearer token carried in the WebSocket
+// subprotocol list, or "" when no token subprotocol is present.
+func extractSubprotocolToken(r *http.Request) string {
+	header := r.Header.Get("Sec-WebSocket-Protocol")
+	if header == "" {
+		return ""
+	}
+
+	for _, proto := range strings.Split(header, ",") {
+		proto = strings.TrimSpace(proto)
+		if !strings.HasPrefix(proto, subprotocolTokenPrefix) {
+			continue
+		}
+
+		decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(proto, subprotocolTokenPrefix))
+		if err != nil || len(decoded) == 0 {
+			return ""
+		}
+		return string(decoded)
+	}
+
+	return ""
+}
+
 // BearerAuthFunc returns a func(*http.Request) bool that validates
 // the Authorization header against the configured bearer token.
 // Intended for WebSocket upgrade authentication where a simple
 // boolean allow/deny is needed without writing HTTP responses.
+// The token may also arrive as a WebSocket subprotocol so that
+// browser clients, which cannot set request headers, can authenticate.
 func BearerAuthFunc(cfg config.AuthConfig, logger *zap.Logger) func(*http.Request) bool {
 	return func(r *http.Request) bool {
 		if !cfg.Enabled {
@@ -70,14 +91,17 @@ func BearerAuthFunc(cfg config.AuthConfig, logger *zap.Logger) func(*http.Reques
 
 		token := extractBearerToken(r)
 		if token == "" {
-			logger.Debug("auth: missing or malformed Authorization header",
+			token = extractSubprotocolToken(r)
+		}
+		if token == "" {
+			logger.Warn("auth: no bearer token in Authorization header or WebSocket subprotocol",
 				zap.String("remote", r.RemoteAddr),
 			)
 			return false
 		}
 
 		if subtle.ConstantTimeCompare([]byte(token), []byte(cfg.Token)) != 1 {
-			logger.Debug("auth: invalid token",
+			logger.Warn("auth: invalid token",
 				zap.String("remote", r.RemoteAddr),
 			)
 			return false
