@@ -45,8 +45,10 @@ func (h *HealthCheckManager) Start(ctx context.Context) {
 	h.stopCh = make(chan struct{})
 	h.done = make(chan struct{})
 	h.pongCh = make(chan struct{}, 1)
+	stopCh := h.stopCh
 	done := h.done
-	go h.run(ctx, done)
+	pongCh := h.pongCh
+	go h.run(ctx, stopCh, pongCh, done)
 }
 
 func (h *HealthCheckManager) Stop() {
@@ -85,12 +87,12 @@ func (h *HealthCheckManager) HandlePong() {
 	}
 }
 
-func (h *HealthCheckManager) run(ctx context.Context, done chan struct{}) {
-	h.mu.Lock()
-	stopCh := h.stopCh
-	pongCh := h.pongCh
-	h.mu.Unlock()
-
+// run drives the ping/pong loop until stopped. stopCh, pongCh and done are
+// passed as parameters so run never re-reads mutable lifecycle state: a Stop()
+// racing with goroutine startup would otherwise leave run blocked on a nil
+// stopCh forever while Stop() waits on done. Closing the parameter-scope done
+// channel can never panic on a nil channel.
+func (h *HealthCheckManager) run(ctx context.Context, stopCh, pongCh, done chan struct{}) {
 	defer close(done)
 
 	ticker := time.NewTicker(h.interval)

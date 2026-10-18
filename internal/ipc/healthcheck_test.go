@@ -2,6 +2,8 @@ package ipc
 
 import (
 	"context"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -223,5 +225,104 @@ func TestRunWithReconnectCreatesHealthCheck(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("RunWithReconnect did not stop after context cancel")
+	}
+}
+
+func TestStopImmediatelyAfterStartDoesNotDeadlock(t *testing.T) {
+	// Regression test for the lifecycle race where Stop() closed and nil'ed
+	// stopCh before the run goroutine captured it from the struct: run then
+	// blocked forever on a nil stopCh while Stop() waited forever on done.
+	// run now receives stopCh/pongCh/done as parameters from Start, so this
+	// loop must complete quickly no matter how the scheduler interleaves
+	// Start and Stop.
+	//
+	// GOMAXPROCS is pinned to1 to shrink the scheduling window at the
+	// Start/Stop boundary and keep the loop timing deterministic.
+	prev := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(prev)
+
+	m := newMockDiscord(t)
+	c := newTestClient(t, m)
+
+	hc := NewHealthCheckManager(c, config.DiscordConfig{
+		HealthCheckInterval: 10 * time.Millisecond,
+		HealthCheckTimeout:  5 * time.Second,
+	}, zap.NewNop())
+
+	const cycles = 200
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < cycles; i++ {
+			hc.Start(context.Background())
+			hc.Stop()
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("rapid Start/Stop loop deadlocked")
+	}
+}
+
+func TestStopWithoutStartIsNoOp(t *testing.T) {
+	c := newTestClient(t, newMockDiscord(t))
+	hc := NewHealthCheckManager(c, config.DiscordConfig{}, zap.NewNop())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		hc.Stop()
+		hc.Stop()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop without Start did not return")
+	}
+}
+
+func TestConcurrentStopAndWaitIsSafe(t *testing.T) {
+	// Concurrent Stop calls and pongs during shutdown must not panic
+	// (close of nil / already-closed channel) or deadlock.
+	m := newMockDiscord(t)
+	c := newTestClient(t, m)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	hc := NewHealthCheckManager(c, config.DiscordConfig{
+		HealthCheckInterval: 10 * time.Millisecond,
+		HealthCheckTimeout:  5 * time.Second,
+	}, zap.NewNop())
+	hc.Start(ctx)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				hc.HandlePong()
+			}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			hc.Stop()
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("concurrent Stop/HandlePong did not settle")
 	}
 }
