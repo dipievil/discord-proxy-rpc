@@ -66,4 +66,19 @@ jobs:
       - name: Run E2E tests
         env:
           E2E_PORT: 18765
+          E2E_SKIP_UNIT: "1"
         run: scripts/e2e.sh
+      - name: Verify e2e fails on a broken start
+        env:
+          E2E_PORT: 18765
+        run: |
+          python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",18765)); s.listen(1); time.sleep(30)' &
+          HOLDER=$!
+          sleep 1
+          if scripts/e2e.sh >/dev/null 2>&1; then
+            echo "::error::e2e.sh exited 0 on a broken start; CI would be green on a broken build"
+            kill "$HOLDER" 2>/dev/null || true
+            exit 1
+          fi
+          echo "OK: e2e.sh exited non-zero when the port was occupied"
+          kill "$HOLDER" 2>/dev/null || true
