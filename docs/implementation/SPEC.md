@@ -86,6 +86,16 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
 
 #### WebSocket Protocol
 
+**Authentication handshake**
+
+When `auth.enabled: true`, the WS upgrade must carry the token either as an `Authorization: Bearer <token>` header (non-browser clients) or — for browser clients, which cannot set request headers — as a WebSocket subprotocol:
+
+```
+Sec-WebSocket-Protocol: proxy-token-<base64url(token)>
+```
+
+The server echoes the offered `proxy-token-*` subprotocol back on success so the browser handshake completes.
+
 **Server → Client (push)**
 
 ```json
@@ -93,6 +103,8 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
 { "type": "state", "status": "connected|disconnected|reconnecting", "client_id": "optional Discord App ID" }
 { "type": "current", "payload": { /* Activity object */ }, "client_id": "optional Discord App ID" }
 ```
+
+`client_id` (the Discord Application ID from `discord.client_id`) is included on `state` and `current` messages when configured, so clients can identify which Discord account the proxy is attached to.
 
 **Client → Server**
 
@@ -111,7 +123,14 @@ Error frames are sent in direct response to a client message that could not be p
 
 | Code | Constant | Description |
 |------|----------|-------------|
+| `AUTH_001` | `ErrCodeUnauthorized` | WS upgrade rejected: auth enabled and token missing or invalid |
 | `MSG_001` | `ErrCodeInvalidMessage` | Malformed JSON, missing/unknown `type`, unknown event in `subscribe`, or any parse failure |
+| `INT_001` | `ErrCodeInternal` | Internal server error (including a recovered panic) |
+| `REQ_001` | `ErrCodePayloadTooLarge` | Request body exceeds the 1 MiB cap (HTTP 413) |
+| `REQ_002` | `ErrCodeRateLimited` | WS upgrade rate limit exceeded (HTTP 429) |
+| `REQ_003` | `ErrCodeTooManyConns` | Max concurrent WS connections reached (HTTP 503) |
+
+HTTP-level errors (auth failure, oversized body, rate limit, connection cap, recovered panic) use the same codes in a top-level JSON envelope: `{ "code": "<CODE>", "error": "<message>" }`. WS `error` frames instead nest them under `payload` as `{ "code", "message" }`.
 
 **Activity Object** (subset of Discord RPC spec)
 
@@ -142,9 +161,12 @@ Error frames are sent in direct response to a client message that could not be p
 #### Auth (Optional)
 
 - Disabled by default
-- If enabled: static token via `Authorization: Bearer <token>` header on WS upgrade
+- If enabled: static token required on the WS upgrade (see the authentication handshake above)
+- Primary token source: `auth.token` in config, overridable via the `PROXY_AUTH_TOKEN` env var
+- Legacy `PROXY_TOKEN` env var is still accepted as a fallback (it overrides `auth.token` when set)
+- Token comparison is constant-time (`crypto/subtle`)
 - Browser clients (the dashboard) cannot set request headers; they send the token as a WebSocket subprotocol `proxy-token-<base64url(token)>` instead
-- Token from config/env (`PROXY_TOKEN`)
+- **Known gap (deliberate in v1)**: REST/dashboard endpoints (`/`, `/api/*`, `/health*`) are NOT auth-gated in the current implementation — only the WS upgrade is. Tracked as future task 9.1.
 
 ### 4. mDNS Announcer (`internal/mdns/`)
 
@@ -166,6 +188,9 @@ discord:
   auto_reconnect: true
   reconnect_base_interval: 5s
   max_reconnect_interval: 60s
+  health_check_interval: 30s # IPC PING interval
+  health_check_timeout: 10s  # IPC PING response timeout
+  coalesce_interval: 5s      # Buffer window for batching presence updates
 
 server:
   host: "0.0.0.0"
@@ -173,10 +198,13 @@ server:
   ws_path: "/ws"
   read_timeout: 10s
   write_timeout: 10s
+  max_ws_connections: 100    # cap on concurrent WebSocket clients
+  rate_limit_per_ip: 10      # max WS upgrades per IP within the window
+  rate_limit_window: 1m      # rate-limit window
 
 auth:
   enabled: false
-  token: ""                  # override via PROXY_TOKEN env
+  token: ""                  # override via PROXY_AUTH_TOKEN env (legacy: PROXY_TOKEN)
 
 mdns:
   enabled: true
@@ -222,20 +250,25 @@ discord-proxy-rpc/
 │   ├── ipc/
 │   │   ├── client.go
 │   │   ├── reconnect.go
+│   │   ├── healthcheck.go
 │   │   └── parser.go
 │   ├── server/
 │   │   ├── http.go
 │   │   ├── ws.go
 │   │   ├── hub.go
 │   │   ├── auth.go
-│   │   └── messages.go
+│   │   ├── errors.go
+│   │   ├── messages.go
+│   │   └── ratelimit.go
 │   ├── state/
 │   │   └── presence.go
 │   ├── mdns/
-│   │   └── announce.go
+│   │   ├── announce.go
+│   │   └── signal.go
 │   └── platform/
 │       └── ipc_path.go
 ├── web/
+│   ├── embed.go
 │   ├── index.html
 │   ├── app.js
 │   └── style.css
@@ -244,8 +277,11 @@ discord-proxy-rpc/
 │       └── activity.go
 ├── configs/
 │   └── config.example.yaml
+├── scripts/
+│   └── e2e.sh                # End-to-end smoke test against a real binary
 ├── .github/
 │   └── workflows/
+│       ├── ci.yml
 │       └── release.yml
 ├── go.mod
 ├── go.sum
@@ -260,18 +296,18 @@ discord-proxy-rpc/
 ## Dependencies
 
 ```go
-module github.com/seu-usuario/discord-proxy-rpc
+module github.com/discord-proxy-rpc/discord-proxy-rpc
 
-go 1.26
+go 1.26.5
 
 require (
-    github.com/dragsbruh/gopresence v0.0.0-20260104...
-    github.com/gorilla/websocket v1.5.1
-    github.com/grandcat/zeroconf v0.0.0-20240319...
-    github.com/spf13/viper v1.19.0
-    github.com/spf13/cobra v1.8.0
-    go.uber.org/zap v1.26.0
-    gopkg.in/yaml.v3 v3.0.1
+    github.com/dop251/goja v0.0.0-20241024094426-79f3a7efcdbd
+    github.com/dragsbruh/gopresence v0.0.0-20260104125204-049c09d5d051
+    github.com/google/uuid v1.6.0
+    github.com/gorilla/websocket v1.5.3
+    github.com/grandcat/zeroconf v1.0.0
+    github.com/spf13/viper v1.21.0
+    go.uber.org/zap v1.28.0
 )
 ```
 
@@ -291,6 +327,12 @@ GOOS=windows GOARCH=amd64 go build -o bin/discord-proxy-windows-amd64.exe ./cmd/
 # All platforms
 make build-all
 ```
+
+### CI (GitHub Actions — `.github/workflows/ci.yml`)
+
+- Triggers: push and PR to `dev` and `main`
+- Jobs: `lint` (go vet), `test` (`make test`, unit + integration with `-race`), `build` (`make build`), `e2e` (`scripts/e2e.sh`, incl. verification that the script fails on a broken start)
+- A PR may merge only with green CI
 
 ### Release (GitHub Actions + GoReleaser)
 
@@ -341,7 +383,12 @@ ENTRYPOINT ["discord-proxy"]
 
 - **Read-only**: No `SET_ACTIVITY` command exposed
 - **LAN only**: Binds to `0.0.0.0` by default; restrict via firewall or `host: "127.0.0.1"` + VPN (Tailscale)
-- **Optional token auth**: Enable `auth.enabled: true` + set `PROXY_TOKEN` for shared-secret auth
+- **Optional token auth**: Enable `auth.enabled: true` + set `PROXY_AUTH_TOKEN` (legacy: `PROXY_TOKEN`) for shared-secret auth on the WS upgrade; comparison is constant-time. REST/dashboard endpoints are NOT auth-gated yet (tracked as task 9.1)
+- **WS rate limiting**: Per-IP limiter on WS upgrades (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 10 upgrades per minute per IP); excess upgrades get HTTP 429 `REQ_002`
+- **Max WS connections**: Concurrent client cap (`server.max_ws_connections`, default 100); excess upgrades get HTTP 503 `REQ_003`
+- **Request body cap**: 1 MiB limit on all HTTP routes; oversized bodies get HTTP 413 `REQ_001`
+- **Panic recovery**: `RecoveryMiddleware` wraps the HTTP mux (plus an inner recover in the WS handler); a panicking handler returns HTTP 500 `INT_001` instead of crashing the process
+- **Cross-origin protection**: The WS upgrader rejects cross-origin requests (gorilla/websocket default `CheckOrigin`); no wildcard CORS headers are emitted
 - **No persistence**: No database, no logs of presence data beyond memory
 - **mDNS**: Only announces service existence; no sensitive data in TXT records
 

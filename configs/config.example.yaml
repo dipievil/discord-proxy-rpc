@@ -13,10 +13,13 @@ server:
   ws_path: "/ws"
   read_timeout: 10s
   write_timeout: 10s
+  max_ws_connections: 100    # cap on concurrent WebSocket clients
+  rate_limit_per_ip: 10      # max WS upgrades per IP within the window
+  rate_limit_window: 1m      # rate-limit window
 
 auth:
   enabled: false
-  token: ""                  # override via PROXY_TOKEN env
+  token: ""                  # override via PROXY_AUTH_TOKEN env (legacy: PROXY_TOKEN)
 
 mdns:
   enabled: true

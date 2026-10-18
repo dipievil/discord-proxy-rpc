@@ -179,10 +179,13 @@ server:
   ws_path: "/ws"                         # WebSocket upgrade path
   read_timeout: 10s                      # HTTP read timeout
   write_timeout: 10s                     # HTTP write timeout
+  max_ws_connections: 100                # Cap on concurrent WebSocket clients
+  rate_limit_per_ip: 10                  # Max WS upgrades per IP within the window
+  rate_limit_window: 1m                  # Rate-limit window
 
 auth:
   enabled: false                         # Enable Bearer token auth
-  token: ""                              # Auth token (also via PROXY_TOKEN env)
+  token: ""                              # Auth token (also via PROXY_AUTH_TOKEN env)
 
 mdns:
   enabled: true                          # Advertise via mDNS/Bonjour
@@ -212,6 +215,9 @@ Every config key can be set via an environment variable with the `PROXY_` prefix
 | `server.ws_path` | `PROXY_SERVER_WS_PATH` | `/ws` |
 | `server.read_timeout` | `PROXY_SERVER_READ_TIMEOUT` | `10s` |
 | `server.write_timeout` | `PROXY_SERVER_WRITE_TIMEOUT` | `10s` |
+| `server.max_ws_connections` | `PROXY_SERVER_MAX_WS_CONNECTIONS` | `100` |
+| `server.rate_limit_per_ip` | `PROXY_SERVER_RATE_LIMIT_PER_IP` | `10` |
+| `server.rate_limit_window` | `PROXY_SERVER_RATE_LIMIT_WINDOW` | `1m` |
 | `auth.enabled` | `PROXY_AUTH_ENABLED` | `false` |
 | `auth.token` | `PROXY_AUTH_TOKEN` | `""` |
 | `auth.token` | `PROXY_TOKEN` | `""` |
