@@ -413,7 +413,7 @@ Releases are automated via GitHub Actions using semantic-release:
 
 ### Docker build
 
-A multi-stage Dockerfile is available. Run `docker build` to produce the image.
+> **Status: not yet available.** No Dockerfile is present in the repository yet. A container image will be published once Docker packaging is added.
 
 ---
 
