@@ -304,6 +304,11 @@ make build-all
 
 ### Docker
 
+Multi-stage build (builder + Alpine runtime). The runtime user is configurable so it can match the host
+desktop-session user that owns Discord's IPC socket (`--build-arg APP_UID/APP_GID`, or `docker run --user`);
+documented mounts: the host `$XDG_RUNTIME_DIR` (read-only) for `discord-ipc-*` and `config.yaml` at
+`/etc/discord-proxy-rpc/config.yaml` (read-only).
+
 ```dockerfile
 FROM golang:1.26-alpine AS builder
 WORKDIR /src
@@ -311,7 +316,11 @@ COPY . .
 RUN go build -o /out/discord-proxy ./cmd/proxy
 
 FROM alpine:3.20
+ARG APP_UID=10001
+ARG APP_GID=10001
+RUN addgroup -g "${APP_GID}" appuser && adduser -D -H -u "${APP_UID}" -G appuser appuser
 COPY --from=builder /out/discord-proxy /usr/local/bin/
+USER appuser
 EXPOSE 8765
 ENTRYPOINT ["discord-proxy"]
 ```
