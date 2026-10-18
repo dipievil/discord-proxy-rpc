@@ -21,6 +21,7 @@ This is Rich Presence agent that send activities to a running Discord on your LA
 - Use *_env* file for sensitive information and never commit it to the repository
 - Always add unit tests for new features and bug fixes
 - Update any tests that are affected by new features or bug fixes
+- Ensure squash-merge PR titles follow conventional commit format (feat:, fix:, feat!:) to enable automatic version bumping via semantic-release.
 
 ## Tasks management
 
