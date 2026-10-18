@@ -71,8 +71,15 @@ jobs:
       - name: Verify e2e fails on a broken start
         env:
           E2E_PORT: 18765
+          E2E_SKIP_UNIT: "1"
+          E2E_STARTUP_TIMEOUT: 10
         run: |
-          python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",18765)); s.listen(1); time.sleep(30)' &
+          # The port holder MUST outlive e2e.sh's bounded startup deadline
+          # (E2E_STARTUP_TIMEOUT, 10s above) by a wide margin, so e2e.sh can
+          # never succeed by outwaiting the holder: it must observe the
+          # occupied port and exit non-zero. 300s >> 10s and the e2e job
+          # timeout-minutes (10) still bounds the step.
+          python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",18765)); s.listen(1); time.sleep(300)' &
           HOLDER=$!
           sleep 1
           if scripts/e2e.sh >/dev/null 2>&1; then
