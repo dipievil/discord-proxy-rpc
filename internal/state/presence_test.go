@@ -282,6 +282,74 @@ func TestConcurrentUpdateAndRead(t *testing.T) {
 	wg.Wait()
 }
 
+func TestStopImmediatelyAfterStartDoesNotDeadlock(t *testing.T) {
+	// Regression test for the Start/Stop deadlock: Stop() could race with the
+	// run goroutine's startup, leaving run blocked on a nil stopCh forever
+	// while Stop waited on done forever. run now receives stopCh/done as
+	// parameters, so Stop always wakes it.
+	p := newTestPresence(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const cycles = 1000
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < cycles; i++ {
+			p.Start(ctx)
+			p.Stop()
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("rapid Start/Stop loop deadlocked")
+	}
+}
+
+func TestStopWithoutStartIsNoOp(t *testing.T) {
+	p := newTestPresence(t)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.Stop()
+		p.Stop()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop without Start did not return")
+	}
+}
+
+func TestConcurrentDoubleStop(t *testing.T) {
+	p := newTestPresence(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+
+	const stoppers = 10
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(stoppers)
+	for i := 0; i < stoppers; i++ {
+		go func() {
+			defer wg.Done()
+			p.Stop()
+		}()
+	}
+	go func() { wg.Wait(); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("concurrent Stop calls deadlocked")
+	}
+}
+
 func TestStopCleansUp(t *testing.T) {
 	p := newTestPresence(t)
 	ctx, cancel := context.WithCancel(context.Background())
