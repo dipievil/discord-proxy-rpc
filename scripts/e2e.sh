@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BINARY="/tmp/discord-proxy-e2e"
 BINARY_LOG="/tmp/discord-proxy-e2e.log"
 PORT="${E2E_PORT:-18765}"
+SKIP_UNIT="${E2E_SKIP_UNIT:-0}"
 PID=""
 PASS=0
 FAIL=0
@@ -49,6 +50,10 @@ echo ""
 # --- Phase 2: Go unit + integration tests ---
 # Run the whole package: a name-based -run regex silently misses tests and
 # picks up unrelated ones whose names happen to share a prefix.
+if [[ "$SKIP_UNIT" == "1" ]]; then
+    echo "--- Phases 2 & 3 skipped (E2E_SKIP_UNIT=1; covered by the 'test' CI job) ---"
+    echo ""
+else
 echo "--- Phase 2: Unit & Integration Tests ---"
 if (cd "$ROOT_DIR" && go test -race -count=1 -timeout 120s ./internal/server/ -v 2>&1 | tail -40); then
     pass "Go integration tests passed"
@@ -65,6 +70,7 @@ else
     fail "E2E full stack test failed"
 fi
 echo ""
+fi
 
 # --- Phase 4: Script-level E2E against running binary ---
 # The binary has no CLI flags; all settings come from PROXY_* env vars
@@ -163,6 +169,10 @@ PID=""
 echo ""
 
 # --- Phase 5: Full race-condition test ---
+if [[ "$SKIP_UNIT" == "1" ]]; then
+    echo "--- Phase 5 skipped (E2E_SKIP_UNIT=1; covered by the 'test' CI job) ---"
+    echo ""
+else
 echo "--- Phase 5: Race Detection (full suite) ---"
 if (cd "$ROOT_DIR" && go test -race -count=1 -timeout 120s ./... 2>&1 | tail -20); then
     pass "Full test suite passed with race detector"
@@ -170,6 +180,7 @@ else
     fail "Full test suite failed or had race conditions"
 fi
 echo ""
+fi
 
 # --- Summary ---
 summary
