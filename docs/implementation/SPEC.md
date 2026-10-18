@@ -91,7 +91,7 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
 ```json
 { "type": "presence", "payload": { /* Activity object */ } }
 { "type": "state", "status": "connected|disconnected|reconnecting", "client_id": "optional Discord App ID" }
-{ "type": "current", "payload": { /* Activity object */ } }
+{ "type": "current", "payload": { /* Activity object */ }, "client_id": "optional Discord App ID" }
 ```
 
 **Client → Server**
@@ -119,7 +119,7 @@ Error frames are sent in direct response to a client message that could not be p
 {
   "details": "string",
   "state": "string",
-  "timestamps": { "start": 1234567890, "end": 1234567890 },
+  "timestamps": { "start": 1700000000000, "end": 1700003600000 },
   "assets": {
     "large_image": "string", "large_text": "string",
     "small_image": "string", "small_text": "string"
@@ -129,6 +129,8 @@ Error frames are sent in direct response to a client message that could not be p
   "type": 0
 }
 ```
+
+> `timestamps.start` / `timestamps.end` are Unix **milliseconds**, matching Discord's IPC protocol. The dashboard converts them for display.
 
 #### Hub (Broadcast Manager)
 
@@ -141,6 +143,7 @@ Error frames are sent in direct response to a client message that could not be p
 
 - Disabled by default
 - If enabled: static token via `Authorization: Bearer <token>` header on WS upgrade
+- Browser clients (the dashboard) cannot set request headers; they send the token as a WebSocket subprotocol `proxy-token-<base64url(token)>` instead
 - Token from config/env (`PROXY_TOKEN`)
 
 ### 4. mDNS Announcer (`internal/mdns/`)

@@ -313,6 +313,8 @@ func TestRunTerminatesOnPeerClose(t *testing.T) {
 	m := newMockDiscord(t)
 	c := newTestClient(t, m)
 
+	events := c.Events()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errCh := make(chan error, 1)
@@ -327,13 +329,35 @@ func TestRunTerminatesOnPeerClose(t *testing.T) {
 	}
 
 	found := false
-	for evt := range c.Events() {
+	for evt := range events {
 		if evt.Err != nil {
 			found = true
 		}
 	}
 	if !found {
 		t.Error("expected a terminal event with error")
+	}
+}
+
+func TestEventsNilAfterRunReturns(t *testing.T) {
+	m := newMockDiscord(t)
+	c := newTestClient(t, m)
+
+	if c.Events() == nil {
+		t.Fatal("expected a non-nil events channel while connected")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- c.Run(ctx) }()
+
+	waitAccept(t, m)
+	m.closeConnection()
+	<-errCh
+
+	if ch := c.Events(); ch != nil {
+		t.Error("expected Events() to return nil once the session ended")
 	}
 }
 

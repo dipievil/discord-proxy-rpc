@@ -5,7 +5,7 @@ BINARY_NAME := discord-proxy
 BIN_DIR     := bin
 MODULE      := github.com/discord-proxy-rpc/discord-proxy-rpc
 
-.PHONY: build build-linux build-windows build-all test lint run dev release clean
+.PHONY: build build-linux build-windows build-all test lint run dev release clean e2e
 
 ## build: Build for current platform
 build:
@@ -65,3 +65,12 @@ release:
 ## clean: Remove build artifacts
 clean:
 	rm -rf $(BIN_DIR)
+
+## e2e: Run end-to-end tests (requires gcc for race detector)
+e2e:
+	@if command -v gcc > /dev/null 2>&1; then \
+		E2E_PORT=$${E2E_PORT:-18765} scripts/e2e.sh; \
+	else \
+		echo "gcc not found, e2e tests require race detector. Install gcc to run e2e tests."; \
+		exit 1; \
+	fi

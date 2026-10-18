@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 
+	"github.com/discord-proxy-rpc/discord-proxy-rpc/internal/config"
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/pkg/types"
 )
 
@@ -514,6 +516,47 @@ func TestWSAuthFuncWithBearerToken(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		if count := hub.ClientCount(); count != 1 {
 			t.Errorf("ClientCount = %d, want 1", count)
+		}
+	})
+}
+
+func TestWSAuthFuncAcceptsSubprotocolToken(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	const token = "subprotocol-secret"
+	cfg := config.AuthConfig{Enabled: true, Token: token}
+
+	handler := NewWSHandler(hub, zap.NewNop()).WithAuth(BearerAuthFunc(cfg, zap.NewNop()))
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	t.Run("subprotocol token accepted", func(t *testing.T) {
+		offered := "proxy-token-" + base64.RawURLEncoding.EncodeToString([]byte(token))
+		dialer := websocket.Dialer{Subprotocols: []string{offered}}
+
+		conn, _, err := dialer.Dial(wsURL(server), nil)
+		if err != nil {
+			t.Fatalf("dial with subprotocol token: %v", err)
+		}
+		defer conn.Close()
+
+		if got := conn.Subprotocol(); got != offered {
+			t.Errorf("negotiated subprotocol = %q, want %q", got, offered)
+		}
+
+		waitForClientCount(t, hub, 1)
+	})
+
+	t.Run("wrong subprotocol token rejected", func(t *testing.T) {
+		dialer := websocket.Dialer{
+			Subprotocols: []string{"proxy-token-" + base64.RawURLEncoding.EncodeToString([]byte("wrong"))},
+		}
+
+		conn, _, err := dialer.Dial(wsURL(server), nil)
+		if err == nil {
+			conn.Close()
+			t.Fatal("expected dial to fail with wrong subprotocol token")
 		}
 	})
 }

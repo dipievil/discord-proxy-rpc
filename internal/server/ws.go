@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"runtime/debug"
+	"strings"
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
@@ -61,23 +62,32 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.connTracker != nil && !h.connTracker.CanConnect() {
-		h.logger.Warn("WebSocket connection rejected: max connections reached",
-			zap.Int("max", h.connTracker.maxConn))
-		writeAPIError(w, h.logger, http.StatusServiceUnavailable,
-			ErrCodeTooManyConns, "max connections reached")
-		return
+	reserved := false
+	if h.connTracker != nil {
+		if !h.connTracker.TryAdd() {
+			h.logger.Warn("WebSocket connection rejected: max connections reached",
+				zap.Int("max", h.connTracker.maxConn))
+			writeAPIError(w, h.logger, http.StatusServiceUnavailable,
+				ErrCodeTooManyConns, "max connections reached")
+			return
+		}
+		reserved = true
+		// Release the reservation unless the connection is handed off to
+		// trackDisconnect below (upgrade failure or a later panic).
+		defer func() {
+			if reserved {
+				h.connTracker.Remove()
+			}
+		}()
 	}
 
-	conn, err := h.upgrader.Upgrade(w, r, nil)
+	conn, err := h.upgrader.Upgrade(w, r, subprotocolResponse(r))
 	if err != nil {
 		h.logger.Error("WebSocket upgrade failed", zap.Error(err))
 		return
 	}
 
-	if h.connTracker != nil {
-		h.connTracker.Add()
-	}
+	reserved = false
 
 	client := NewClient(conn, h.hub)
 	h.hub.Register(client)
@@ -87,6 +97,20 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	go h.trackDisconnect(client)
 	go client.WritePump()
 	go client.ReadPump()
+}
+
+// subprotocolResponse echoes back the bearer-token subprotocol the client
+// offered, if any. Browsers fail the handshake when the server selects a
+// subprotocol they did not offer, and gorilla/websocket only takes the selected
+// subprotocol from the response header when the upgrader has no static
+// subprotocol list configured.
+func subprotocolResponse(r *http.Request) http.Header {
+	for _, proto := range websocket.Subprotocols(r) {
+		if strings.HasPrefix(proto, subprotocolTokenPrefix) {
+			return http.Header{"Sec-WebSocket-Protocol": []string{proto}}
+		}
+	}
+	return nil
 }
 
 func (h *WSHandler) trackDisconnect(client *Client) {

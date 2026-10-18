@@ -246,6 +246,8 @@ The dashboard is an embedded web SPA served at the root path (`/`). It provides:
 
 mDNS auto-discovery works out of the box on most networks. On Linux, ensure Avahi is running. On macOS, it is built-in. On Windows, install Bonjour Print Services or use mDNS manually.
 
+When `auth.enabled` is true, the dashboard cannot send an `Authorization` header. Open the dashboard once with the token in the URL — `http://<host>:8765/?token=<your-token>` — and it stores the token in `sessionStorage`, strips it from the address bar, and authenticates the WebSocket with it on every (re)connect. The token is scoped to that tab and discarded when it closes; other API clients still send their own `Authorization` header.
+
 ---
 
 ## API Reference
@@ -304,6 +306,12 @@ Include a Bearer token in the upgrade request header:
 ```
 Authorization: Bearer <your-token>
 ```
+
+Browser clients (such as the dashboard), which cannot set request headers, send the token as a WebSocket subprotocol instead:
+```
+Sec-WebSocket-Protocol: proxy-token-<base64url(token)>
+```
+The dashboard produces this automatically when given `?token=<your-token>` in the page URL.
 
 **Client -> Server messages:**
 
@@ -391,6 +399,7 @@ Current state response:
 | `make dev` | Run with hot reload via Air (if installed) |
 | `make release` | Build and publish via GoReleaser |
 | `make clean` | Remove build artifacts |
+| `make e2e` | Run end-to-end tests (requires GCC for race detector) |
 
 ### Release process
 

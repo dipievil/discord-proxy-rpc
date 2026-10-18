@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -158,11 +159,11 @@ func assertUnauthorized(t *testing.T, rec *httptest.ResponseRecorder) {
 
 func TestBearerAuthFunc(t *testing.T) {
 	tests := []struct {
-		name           string
-		authEnabled    bool
+		name            string
+		authEnabled     bool
 		configuredToken string
-		authHeader     string
-		wantAllow      bool
+		authHeader      string
+		wantAllow       bool
 	}{
 		{
 			name:            "auth disabled - no header",
@@ -265,6 +266,81 @@ func TestBearerAuthFunc(t *testing.T) {
 
 			got := authFn(req)
 			if got != tt.wantAllow {
+				t.Errorf("BearerAuthFunc() = %v, want %v", got, tt.wantAllow)
+			}
+		})
+	}
+}
+
+func TestBearerAuthFuncSubprotocolToken(t *testing.T) {
+	const token = "my-secret-token"
+	encode := func(value string) string {
+		return base64.RawURLEncoding.EncodeToString([]byte(value))
+	}
+
+	tests := []struct {
+		name        string
+		subprotocol string
+		authHeader  string
+		wantAllow   bool
+	}{
+		{
+			name:        "no subprotocol rejected",
+			subprotocol: "",
+			wantAllow:   false,
+		},
+		{
+			name:        "unrelated subprotocol rejected",
+			subprotocol: "graphql-ws",
+			wantAllow:   false,
+		},
+		{
+			name:        "valid token in subprotocol allowed",
+			subprotocol: "proxy-token-" + encode(token),
+			wantAllow:   true,
+		},
+		{
+			name:        "token offered alongside other subprotocols allowed",
+			subprotocol: "graphql-ws, proxy-token-" + encode(token),
+			wantAllow:   true,
+		},
+		{
+			name:        "wrong token in subprotocol rejected",
+			subprotocol: "proxy-token-" + encode("wrong-token"),
+			wantAllow:   false,
+		},
+		{
+			name:        "malformed base64 rejected",
+			subprotocol: "proxy-token-!!!not-base64!!!",
+			wantAllow:   false,
+		},
+		{
+			name:        "empty encoded token rejected",
+			subprotocol: "proxy-token-",
+			wantAllow:   false,
+		},
+		{
+			name:        "bearer header takes precedence over bad subprotocol",
+			subprotocol: "proxy-token-" + encode("wrong-token"),
+			authHeader:  "Bearer " + token,
+			wantAllow:   true,
+		},
+	}
+
+	cfg := config.AuthConfig{Enabled: true, Token: token}
+	authFn := BearerAuthFunc(cfg, zap.NewNop())
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+			if tt.subprotocol != "" {
+				req.Header.Set("Sec-WebSocket-Protocol", tt.subprotocol)
+			}
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+
+			if got := authFn(req); got != tt.wantAllow {
 				t.Errorf("BearerAuthFunc() = %v, want %v", got, tt.wantAllow)
 			}
 		})

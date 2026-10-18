@@ -2,6 +2,8 @@ package server
 
 import (
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -133,38 +135,60 @@ func TestRateLimiterEvictsExpiredVisitors(t *testing.T) {
 func TestConnectionTrackerAllowsWithinLimit(t *testing.T) {
 	ct := NewConnectionTracker(3)
 
-	if !ct.CanConnect() {
-		t.Fatal("should allow connection")
+	for i := 0; i < 3; i++ {
+		if !ct.TryAdd() {
+			t.Fatalf("TryAdd() = false on reservation %d, want true", i+1)
+		}
 	}
-	ct.Add()
-	if !ct.CanConnect() {
-		t.Fatal("should allow connection")
+	if ct.TryAdd() {
+		t.Fatal("TryAdd() = true at limit, want false")
 	}
-	ct.Add()
-	if !ct.CanConnect() {
-		t.Fatal("should allow connection")
-	}
-	ct.Add()
-	if ct.CanConnect() {
-		t.Fatal("should reject connection at limit")
+	if ct.Count() != 3 {
+		t.Errorf("Count = %d, want 3", ct.Count())
 	}
 }
 
 func TestConnectionTrackerRemove(t *testing.T) {
 	ct := NewConnectionTracker(2)
 
-	ct.Add()
-	ct.Add()
-	if ct.CanConnect() {
+	ct.TryAdd()
+	ct.TryAdd()
+	if ct.TryAdd() {
 		t.Fatal("should be at limit")
 	}
 
 	ct.Remove()
-	if !ct.CanConnect() {
-		t.Fatal("should allow after remove")
-	}
 	if ct.Count() != 1 {
 		t.Errorf("Count = %d, want 1", ct.Count())
+	}
+	if !ct.TryAdd() {
+		t.Fatal("should allow a reservation after remove")
+	}
+}
+
+func TestConnectionTrackerTryAddConcurrent(t *testing.T) {
+	ct := NewConnectionTracker(5)
+
+	const goroutines = 64
+	var wg sync.WaitGroup
+	var granted int64
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if ct.TryAdd() {
+				atomic.AddInt64(&granted, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if granted != 5 {
+		t.Errorf("granted reservations = %d, want 5", granted)
+	}
+	if ct.Count() != 5 {
+		t.Errorf("Count = %d, want 5", ct.Count())
 	}
 }
 
