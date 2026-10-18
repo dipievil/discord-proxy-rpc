@@ -7,6 +7,11 @@ BINARY="/tmp/discord-proxy-e2e"
 BINARY_LOG="/tmp/discord-proxy-e2e.log"
 PORT="${E2E_PORT:-18765}"
 SKIP_UNIT="${E2E_SKIP_UNIT:-0}"
+# Bounded startup/health deadline: the proxy must serve /health within this
+# many seconds of being launched, otherwise this script exits non-zero
+# immediately. Any CI step that occupies the E2E_PORT must hold it for longer
+# than this deadline.
+STARTUP_TIMEOUT="${E2E_STARTUP_TIMEOUT:-10}"
 PID=""
 PASS=0
 FAIL=0
@@ -96,25 +101,24 @@ PROXY_LOGGING_FORMAT="console" \
     "$BINARY" >"$BINARY_LOG" 2>&1 &
 PID=$!
 
-sleep 1
-if ! kill -0 "$PID" 2>/dev/null; then
-    set +e
-    wait "$PID"
-    exit_code=$?
-    set -e
-    PID=""
-    dump_binary_log
-    fail "Binary exited during startup (exit code ${exit_code})"
-    summary
-    exit 1
-fi
-
 BASE="http://127.0.0.1:${PORT}"
 
-echo "  Waiting for server on port ${PORT}..."
+echo "  Waiting up to ${STARTUP_TIMEOUT}s for server on port ${PORT}..."
 READY=0
-for _ in $(seq 1 20); do
-    if curl -sf "$BASE/health" >/dev/null 2>&1; then
+DEADLINE=$((SECONDS + STARTUP_TIMEOUT))
+while (( SECONDS < DEADLINE )); do
+    if ! kill -0 "$PID" 2>/dev/null; then
+        set +e
+        wait "$PID"
+        exit_code=$?
+        set -e
+        PID=""
+        dump_binary_log
+        fail "Binary exited during startup (exit code ${exit_code})"
+        summary
+        exit 1
+    fi
+    if curl -sf --max-time 1 "$BASE/health" >/dev/null 2>&1; then
         READY=1
         break
     fi
@@ -160,7 +164,9 @@ if [[ "$READY" -eq 1 ]]; then
     fi
 else
     dump_binary_log
-    fail "Server did not become ready on port ${PORT} within 10s"
+    fail "Server did not become ready on port ${PORT} within ${STARTUP_TIMEOUT}s"
+    summary
+    exit 1
 fi
 
 kill "$PID" 2>/dev/null || true
