@@ -58,8 +58,10 @@ func (p *Presence) Start(ctx context.Context) {
 	p.done = make(chan struct{})
 	p.stopped = false
 	p.lastNotified = types.Activity{}
+	stopCh := p.stopCh
+	done := p.done
 	p.mu.Unlock()
-	go p.run(ctx)
+	go p.run(ctx, stopCh, done)
 }
 
 func (p *Presence) Stop() {
@@ -162,12 +164,12 @@ func (p *Presence) flush(gen uint64) {
 	p.notify(update)
 }
 
-func (p *Presence) run(ctx context.Context) {
-	defer close(p.done)
-
-	p.mu.Lock()
-	stopCh := p.stopCh
-	p.mu.Unlock()
+// run waits for a stop signal or context cancellation. stopCh and done are
+// passed as parameters so run never re-reads mutable state: a Stop() racing
+// with goroutine startup would otherwise leave run blocked on a nil stopCh
+// forever, and Stop() would block forever waiting on done.
+func (p *Presence) run(ctx context.Context, stopCh, done chan struct{}) {
+	defer close(done)
 
 	select {
 	case <-ctx.Done():
