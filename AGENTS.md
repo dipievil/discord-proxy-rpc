@@ -23,6 +23,7 @@ This is Rich Presence agent that send activities to a running Discord on your LA
 - Update any tests that are affected by new features or bug fixes
 - Ensure squash-merge PR titles follow conventional commit format (feat:, fix:, feat!:) to enable automatic version bumping via semantic-release.
 
+- Ensure squash-merge PR titles follow conventional commit format (feat:, fix:, feat!:) to enable automatic version bumping via semantic-release.
 ## Tasks management
 
 - Initial spec files are on folder `docs/implementation`. Follow it. If user ask for different approach update these files.
