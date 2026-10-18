@@ -394,15 +394,17 @@ Current state response:
 
 ### Release process
 
-Releases are automated via GitHub Actions + GoReleaser:
+Releases are automated via GitHub Actions using semantic-release:
 
-1. Push a tag matching `v*` (e.g., `v1.0.0`).
-2. GitHub Actions builds binaries for Linux (amd64, arm64), Windows (amd64), and macOS (amd64, arm64).
-3. Artifacts (binaries, checksums, release notes) are published to GitHub Releases.
+1. Push to `main` triggers the release workflow.
+2. The `version` job runs semantic-release to determine the version bump (based on conventional commit messages in squash-merged PRs) and creates a Git tag.
+3. If a new release is detected, the `build` job cross-compiles binaries for five targets (Linux amd64/arm64, Windows amd64, macOS amd64/arm64).
+4. The `draft-release` job creates a draft GitHub Release with the generated release notes and attaches the binaries.
+5. Review the draft release, then publish it when ready.
 
 ### Docker build
 
-> **Status: not yet available.** No Dockerfile is present in the repository yet. A container image will be published once Docker packaging is added.
+A multi-stage Dockerfile is available. Run `docker build` to produce the image.
 
 ---
 
