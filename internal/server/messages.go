@@ -125,12 +125,16 @@ func NewStateMessage(status ConnectionState, clientID ...string) ServerMessage {
 	return msg
 }
 
-func NewCurrentMessage(activity types.Activity) (ServerMessage, error) {
+func NewCurrentMessage(activity types.Activity, clientID ...string) (ServerMessage, error) {
 	payload, err := json.Marshal(activity)
 	if err != nil {
 		return ServerMessage{}, fmt.Errorf("marshalling current payload: %w", err)
 	}
-	return ServerMessage{Type: MsgTypeCurrent, Payload: payload}, nil
+	msg := ServerMessage{Type: MsgTypeCurrent, Payload: payload}
+	if len(clientID) > 0 {
+		msg.ClientID = clientID[0]
+	}
+	return msg, nil
 }
 
 func NewSubscribeMessage(events []string) (ClientMessage, error) {

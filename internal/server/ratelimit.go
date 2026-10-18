@@ -103,16 +103,19 @@ func NewConnectionTracker(maxConn int) *ConnectionTracker {
 	return &ConnectionTracker{maxConn: maxConn}
 }
 
-func (ct *ConnectionTracker) CanConnect() bool {
+// TryAdd atomically reserves a connection slot when the configured limit has
+// not been reached, reporting whether the reservation succeeded. Checking and
+// incrementing in a single critical section prevents concurrent upgrades from
+// all passing the limit check before any of them increments the count. Callers
+// that fail to establish the connection must call Remove to release the slot.
+func (ct *ConnectionTracker) TryAdd() bool {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
-	return ct.count < ct.maxConn
-}
-
-func (ct *ConnectionTracker) Add() {
-	ct.mu.Lock()
-	defer ct.mu.Unlock()
+	if ct.count >= ct.maxConn {
+		return false
+	}
 	ct.count++
+	return true
 }
 
 func (ct *ConnectionTracker) Remove() {

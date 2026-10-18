@@ -68,6 +68,36 @@ func runDashboardJS(t *testing.T) *goja.Runtime {
 		return obj
 	})
 
+	// Minimal URLSearchParams used by resolveToken for the ?token= query param.
+	vm.Set("URLSearchParams", func(call goja.ConstructorCall) *goja.Object {
+		query := call.Argument(0).String()
+		if strings.HasPrefix(query, "?") {
+			query = query[1:]
+		}
+
+		params := map[string]string{}
+		for _, pair := range strings.Split(query, "&") {
+			if pair == "" {
+				continue
+			}
+			kv := strings.SplitN(pair, "=", 2)
+			if len(kv) == 2 {
+				params[kv[0]] = kv[1]
+			} else {
+				params[kv[0]] = ""
+			}
+		}
+
+		obj := vm.NewObject()
+		obj.Set("get", func(key string) goja.Value {
+			if v, ok := params[key]; ok {
+				return vm.ToValue(v)
+			}
+			return goja.Null()
+		})
+		return obj
+	})
+
 	if _, err := vm.RunString(string(data)); err != nil {
 		t.Fatalf("run app.js: %v", err)
 	}
@@ -236,5 +266,154 @@ func TestDashboardFormatDuration(t *testing.T) {
 		if got.String() != tt.want {
 			t.Errorf("formatDuration(%d) = %q, want %q", tt.seconds, got.String(), tt.want)
 		}
+	}
+}
+
+func TestDashboardGetWsPath(t *testing.T) {
+	vm := runDashboardJS(t)
+	fn := dashboardFn(t, vm, "getWsPath")
+
+	got, err := fn(goja.Undefined())
+	if err != nil {
+		t.Fatalf("getWsPath call: %v", err)
+	}
+	if got.String() != "/ws" {
+		t.Errorf("getWsPath() = %q, want %q (default when no meta tag)", got.String(), "/ws")
+	}
+
+	doc := vm.Get("document").ToObject(vm)
+	meta := vm.NewObject()
+	meta.Set("content", "/custom-ws")
+	doc.Set("querySelector", func(string) goja.Value { return meta })
+
+	got, err = fn(goja.Undefined())
+	if err != nil {
+		t.Fatalf("getWsPath call: %v", err)
+	}
+	if got.String() != "/custom-ws" {
+		t.Errorf("getWsPath() = %q, want %q (from injected meta tag)", got.String(), "/custom-ws")
+	}
+}
+
+func TestDashboardBuildSubprotocols(t *testing.T) {
+	vm := runDashboardJS(t)
+	fn := dashboardFn(t, vm, "buildSubprotocols")
+
+	tests := []struct {
+		name  string
+		token string
+		want  string
+	}{
+		{name: "no token yields no subprotocols", token: "", want: ""},
+		{name: "token base64url encoded into subprotocol", token: "abc", want: "proxy-token-YWJj"},
+		{name: "token with utf-8 bytes", token: "tôkén", want: "proxy-token-dMO0a8Opbg"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := fn(goja.Undefined(), vm.ToValue(tt.token))
+			if err != nil {
+				t.Fatalf("buildSubprotocols call: %v", err)
+			}
+
+			arr := got.ToObject(vm)
+			if arr.Get("length").ToInteger() == 0 {
+				if tt.want != "" {
+					t.Errorf("buildSubprotocols(%q) = empty, want %q", tt.token, tt.want)
+				}
+				return
+			}
+
+			first := arr.Get("0").String()
+			if first != tt.want {
+				t.Errorf("buildSubprotocols(%q) = %q, want %q", tt.token, first, tt.want)
+			}
+		})
+	}
+}
+
+func TestDashboardComputeTimestamps(t *testing.T) {
+	vm := runDashboardJS(t)
+	fn := dashboardFn(t, vm, "computeTimestamps")
+
+	// Discord IPC timestamps are Unix milliseconds.
+	const now = int64(1700000000000)
+
+	run := func(name string, values map[string]int64, wantElapsed, wantRemaining interface{}, wantEnded bool) {
+		t.Run(name, func(t *testing.T) {
+			ts := vm.NewObject()
+			for key, value := range values {
+				ts.Set(key, value)
+			}
+
+			got, err := fn(goja.Undefined(), ts, vm.ToValue(now))
+			if err != nil {
+				t.Fatalf("computeTimestamps call: %v", err)
+			}
+
+			obj := got.ToObject(vm)
+			assertNum := func(key string, want interface{}) {
+				v := obj.Get(key)
+				switch w := want.(type) {
+				case nil:
+					if !goja.IsNull(v) && !goja.IsUndefined(v) {
+						t.Errorf("%s = %v, want null", key, v)
+					}
+				case int64:
+					if v.ToInteger() != w {
+						t.Errorf("%s = %d, want %d", key, v.ToInteger(), w)
+					}
+				}
+			}
+
+			assertNum("elapsed", wantElapsed)
+			assertNum("remaining", wantRemaining)
+			if obj.Get("ended").ToBoolean() != wantEnded {
+				t.Errorf("ended = %v, want %v", obj.Get("ended").ToBoolean(), wantEnded)
+			}
+		})
+	}
+
+	run("start 65 seconds ago", map[string]int64{"start": now - 65000}, int64(65), nil, false)
+	run("end in one hour", map[string]int64{"end": now + 3600000}, nil, int64(3600), false)
+	run("start and end", map[string]int64{"start": now, "end": now + 60000}, int64(0), int64(60), false)
+	run("end already passed", map[string]int64{"end": now - 1000}, nil, nil, true)
+	run("start in the future", map[string]int64{"start": now + 5000}, nil, nil, false)
+	run("no timestamps", map[string]int64{}, nil, nil, false)
+}
+
+func TestDashboardResolveTokenFromUrl(t *testing.T) {
+	vm := runDashboardJS(t)
+
+	location := vm.Get("location").ToObject(vm)
+	location.Set("search", "?token=url-token")
+
+	window := vm.Get("window").ToObject(vm)
+
+	store := map[string]string{}
+	sessionStorage := vm.NewObject()
+	sessionStorage.Set("getItem", func(key string) goja.Value {
+		if v, ok := store[key]; ok {
+			return vm.ToValue(v)
+		}
+		return goja.Null()
+	})
+	sessionStorage.Set("setItem", func(key, value string) {
+		store[key] = value
+	})
+	window.Set("sessionStorage", sessionStorage)
+
+	fn := dashboardFn(t, vm, "resolveToken")
+
+	got, err := fn(goja.Undefined())
+	if err != nil {
+		t.Fatalf("resolveToken call: %v", err)
+	}
+	if got.String() != "url-token" {
+		t.Errorf("resolveToken() = %q, want %q", got.String(), "url-token")
+	}
+
+	if stored := store["proxy-rpc-token"]; stored != "url-token" {
+		t.Errorf("stored token = %q, want %q", stored, "url-token")
 	}
 }

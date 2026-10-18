@@ -164,7 +164,18 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 
 	events := c.events
-	defer close(events)
+	// Clear the active session's channel before closing it, so Events() returns
+	// nil once the session ends. Consumers that re-fetch Events() in a loop would
+	// otherwise range the same closed channel forever and spin instead of waiting
+	// for the next connection.
+	defer func() {
+		c.mu.Lock()
+		if c.events == events {
+			c.events = nil
+		}
+		c.mu.Unlock()
+		close(events)
+	}()
 
 	for {
 		op, data, err := conn.Read()

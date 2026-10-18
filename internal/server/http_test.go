@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -309,6 +310,42 @@ func TestDashboardServing(t *testing.T) {
 	}
 }
 
+func TestDashboardInjectsWSPath(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []ServerOption
+		want string
+	}{
+		{name: "default path", opts: nil, want: `content="/ws"`},
+		{name: "custom path", opts: []ServerOption{WithWSPath("/custom-ws")}, want: `content="/custom-ws"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ts, _, cleanup := newTestHTTPServer(t, tt.opts...)
+			defer cleanup()
+
+			resp, err := http.Get(ts.URL + "/")
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+
+			if !strings.Contains(string(body), tt.want) {
+				t.Errorf("dashboard index missing %q", tt.want)
+			}
+			if strings.Contains(string(body), wsPathPlaceholder) {
+				t.Errorf("dashboard index still contains placeholder %q", wsPathPlaceholder)
+			}
+		})
+	}
+}
+
 func TestNoWildcardCORSHeaders(t *testing.T) {
 	_, ts, _, cleanup := newTestHTTPServer(t)
 	defer cleanup()
@@ -392,6 +429,7 @@ func TestWSGetCurrentViaServer(t *testing.T) {
 	defer cancel()
 
 	activity := types.Activity{Details: "Server Wired Game", Type: types.ActivityPlaying}
+	hub.ClientID = "app-123"
 	srv := NewServer(hub, zap.NewNop(),
 		WithGetCurrentPresence(func() types.Activity { return activity }),
 	)
@@ -426,6 +464,9 @@ func TestWSGetCurrentViaServer(t *testing.T) {
 	}
 	if resp.Type != MsgTypeCurrent {
 		t.Errorf("type = %q, want %q", resp.Type, MsgTypeCurrent)
+	}
+	if resp.ClientID != "app-123" {
+		t.Errorf("client_id = %q, want %q", resp.ClientID, "app-123")
 	}
 
 	var got types.Activity

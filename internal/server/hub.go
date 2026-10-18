@@ -219,7 +219,7 @@ func (c *Client) ReadPump() {
 		case MsgTypeGetCurrent:
 			if c.hub.GetCurrentPresence != nil {
 				activity := c.hub.GetCurrentPresence()
-				resp, err := NewCurrentMessage(activity)
+				resp, err := NewCurrentMessage(activity, c.hub.ClientID)
 				if err != nil {
 					c.hub.logger.Error("failed to create current message", zap.Error(err))
 					continue

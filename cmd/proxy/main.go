@@ -119,8 +119,8 @@ func runIPCEventLoop(ctx context.Context, client *ipc.Client, presence *state.Pr
 			case <-ctx.Done():
 				return
 			case <-time.After(500 * time.Millisecond):
-				continue
 			}
+			continue
 		}
 
 		hub.Broadcast(server.NewStateMessage(server.StateConnected))
