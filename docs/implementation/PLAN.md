@@ -22,7 +22,7 @@ Project scaffolding, configuration, logging, platform abstraction, and build sys
 | 1.5 | `Makefile` | Build, test, lint, run, dev, release targets | All targets work, cross-compile produces binaries |
 | 1.6 | `configs/config.example.yaml` | Documented example config with all options | All SPEC config keys present with comments |
 | 1.7 | `cmd/proxy/main.go` | Skeleton entry point: config load, logger, graceful shutdown | Runs, logs startup, exits cleanly on SIGTERM |
-| 1.8 | `.github/workflows/release.yml` | GoReleaser workflow for tag pushes | Triggers on `v*`, builds all platforms |
+| 1.8 | `.github/workflows/release.yml` | Semantic-release workflow on main push | Triggers on push to main, creates tag, builds binaries, draft release |
 | 1.9 | `.goreleaser.yml` | GoReleaser config: builds, archives, checksums | `goreleaser release --snapshot --clean` works |
 | 1.10 | `Dockerfile` | Multi-stage build (builder + alpine runtime) | `docker build` produces working image |
 | 1.11 | `README.md` | Project overview, quick start, Discord app guide | Covers install, config, run, dashboard access |

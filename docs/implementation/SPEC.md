@@ -291,9 +291,13 @@ make build-all
 
 ### Release (GitHub Actions + GoReleaser)
 
-- Trigger: push tag `v*`
+- Trigger: push to `main`
+- Process:
+    1. `version` job runs semantic-release to determine version bump, creates Git tag.
+    2. If a new release, `build` job cross-compiles binaries for 5 platforms.
+    3. `draft-release` job creates a draft GitHub Release with the generated notes and uploads binaries.
 - Outputs: Linux (amd64, arm64), Windows (amd64), macOS (amd64, arm64)
-- Artifacts: binaries + checksums + release notes
+- Artifacts: binaries attached to draft release (review before publishing)
 
 ### Docker
 
