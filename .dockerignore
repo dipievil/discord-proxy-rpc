@@ -1,0 +1,29 @@
+# VCS / CI / editor tooling
+.git
+.github
+.gitignore
+.opencode/
+
+# Docs and non-build assets
+docs/
+scripts/
+README.md
+LICENSE
+AGENTS.md
+*.md
+
+# Build / release output and config
+bin/
+dist/
+.goreleaser.yml
+.releaserc.json
+Dockerfile
+.dockerignore
+
+# Local configuration and secrets — never bake into the image
+config.yaml
+configs/
+.env
+.env.*
+
+# NOTE: web/ must NOT be ignored — internal assets are embedded via go:embed

@@ -109,7 +109,30 @@ discord-proxy-rpc is a single-binary Go application that runs on the same machin
 
 ### Option 2: Docker
 
-> **Status: not yet available.** There is no Dockerfile in the repository yet. Docker packaging is planned but not implemented; the instructions below are deferred until a container image is published.
+The image runs as a non-root user. To reach Discord's IPC socket it must run as **your desktop-session user** and have that session's runtime directory mounted, otherwise the proxy serves HTTP but can never connect to Discord.
+
+Build (the `APP_UID`/`APP_GID` build args bake your host user into the image):
+
+```bash
+docker build --build-arg APP_UID=$(id -u) --build-arg APP_GID=$(id -g) -t discord-proxy .
+```
+
+Run:
+
+```bash
+docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  -e XDG_RUNTIME_DIR=/run/user/$(id -u) \
+  -v "/run/user/$(id -u):/run/user/$(id -u):ro" \
+  -v "$PWD/config.yaml:/etc/discord-proxy-rpc/config.yaml:ro" \
+  -p 8765:8765 \
+  discord-proxy
+```
+
+- `--user` matches the container process to the host user that owns Discord's socket (it overrides the image default); the `APP_UID`/`APP_GID` build args are an alternative if you prefer baking it in.
+- The runtime directory (`$XDG_RUNTIME_DIR`, usually `/run/user/<uid>`) is mounted read-only — Discord creates `discord-ipc-0` … `discord-ipc-9` there and only the owning UID may connect.
+- `config.yaml` is mounted read-only at `/etc/discord-proxy-rpc/`, one of the built-in config search paths. Alternatively pass `-e PROXY_DISCORD_CLIENT_ID=<id>`.
+- If you skip the runtime-directory mount, the container can still serve the dashboard but reports `disconnected` for IPC.
 
 ### Option 3: Build from source
 
@@ -419,7 +442,11 @@ Releases are automated via GitHub Actions using semantic-release:
 
 ### Docker build
 
-> **Status: not yet available.** No Dockerfile is present in the repository yet. A container image will be published once Docker packaging is added.
+```bash
+docker build -t discord-proxy .
+```
+
+Multi-stage build: `golang:1.26-alpine` compiles a static binary, `alpine:3.20` runs it as the non-root `appuser`. Pass `--build-arg APP_UID=$(id -u) --build-arg APP_GID=$(id -g)` so the image user matches the host session that runs Discord (required for IPC; see [Quick Start](#option-2-docker) for the run command and mounts).
 
 ---
 
@@ -431,6 +458,7 @@ Releases are automated via GitHub Actions using semantic-release:
 - The proxy must run under the **same OS user** as Discord.
 - On Linux, verify `XDG_RUNTIME_DIR` is set (`echo $XDG_RUNTIME_DIR`).
 - Discord creates IPC sockets in `/run/user/<uid>/` (Linux) or `%TEMP%` (Windows).
+- In Docker: run with `--user "$(id -u):$(id -g)"` and mount the host runtime directory (`-v "/run/user/$(id -u):/run/user/$(id -u):ro"` with `XDG_RUNTIME_DIR` set) — a mismatched UID cannot connect to the socket.
 
 ### 2. Dashboard shows "Disconnected"
 
