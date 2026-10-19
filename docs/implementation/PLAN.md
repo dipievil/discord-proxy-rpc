@@ -24,7 +24,7 @@ Project scaffolding, configuration, logging, platform abstraction, and build sys
 | - [x] 1.7 | `cmd/proxy/main.go` | Skeleton entry point: config load, logger, graceful shutdown | Runs, logs startup, exits cleanly on SIGTERM |
 | - [x] 1.8 | `.github/workflows/release.yml` | Semantic-release workflow on main push | Triggers on push to main, creates tag, builds binaries, draft release |
 | - [x] 1.9 | `.goreleaser.yml` | GoReleaser config: builds, archives, checksums | `goreleaser release --snapshot --clean` works |
-| - [x] 1.10 | `Dockerfile` | Multi-stage build (builder + alpine runtime) | `docker build` produces working image |
+| - [ ] 1.10 | `Dockerfile` | Multi-stage build (builder + alpine runtime) | `docker build` produces working image; PR #46 open — tick when merged |
 | - [x] 1.11 | `README.md` | Project overview, quick start, Discord app guide | Covers install, config, run, dashboard access |
 | - [x] 1.12 | `.github/workflows/ci.yml` | GitHub Actions CI: lint (`go vet`), unit tests with `-race`, build, e2e (`scripts/e2e.sh`) — renumbered from Phase 8 | CI runs on push/PR to dev+main; all four jobs green |
 
@@ -202,6 +202,7 @@ Close the remaining security gaps and cut the first public release.
 | [ ] 9.3 | Fail fast on missing `discord.client_id` | Refuse to start with a clear error when `discord.client_id` is empty | Misconfigured runs abort at startup instead of silently flapping |
 | [ ] 9.4 | Cut first release | Merge `dev` → `main`, tag `v0.1.0`, publish release binaries | v0.1.0 published with binaries for all platforms |
 | [ ] 9.5 | Branch protection + required review | Protect `main`/`dev`: require PR + green CI + at least 1 review | Direct pushes blocked; CI required to merge |
+| [ ] 9.6 | Remove legacy `PROXY_TOKEN` env var | Drop the `PROXY_TOKEN` override in `internal/config/config.go` (`setupEnv`); bind `auth.token` to `PROXY_AUTH_TOKEN` only; update `TestProxyTokenEnvVar` in `config_test.go` and all docs mentioning the legacy var (SPEC §Auth, README, `configs/config.example.yaml`). Currently `PROXY_TOKEN` wins over `PROXY_AUTH_TOKEN` when both are set — a migration footgun | `PROXY_TOKEN` is ignored; `PROXY_AUTH_TOKEN` is the sole env source; released as a breaking change (`feat!:` + `BREAKING CHANGE` footer) |
 
 ---
 

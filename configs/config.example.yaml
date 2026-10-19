@@ -19,7 +19,7 @@ server:
 
 auth:
   enabled: false
-  token: ""                  # override via PROXY_AUTH_TOKEN env (legacy: PROXY_TOKEN)
+  token: ""                  # override via PROXY_AUTH_TOKEN env (legacy PROXY_TOKEN wins if both set; removal planned — task 9.6)
 
 mdns:
   enabled: true

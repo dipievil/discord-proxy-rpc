@@ -227,7 +227,7 @@ Every config key can be set via an environment variable with the `PROXY_` prefix
 | `logging.level` | `PROXY_LOGGING_LEVEL` | `info` |
 | `logging.format` | `PROXY_LOGGING_FORMAT` | `json` |
 
-The legacy `PROXY_TOKEN` env var is also supported as a shortcut for `auth.token`.
+The legacy `PROXY_TOKEN` env var is also supported for `auth.token`, but it **takes precedence over `PROXY_AUTH_TOKEN` when both are set**. It is deprecated and scheduled for removal — use `PROXY_AUTH_TOKEN` only.
 
 ---
 
