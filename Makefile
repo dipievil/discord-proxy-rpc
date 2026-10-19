@@ -31,10 +31,10 @@ build-all:
 ##      Falls back to no race detector if gcc is unavailable
 test:
 	@if command -v gcc > /dev/null 2>&1; then \
-		CGO_ENABLED=1 go test -race -cover ./...; \
+		CGO_ENABLED=1 go test -race -cover -timeout 5m ./...; \
 	else \
 		echo "gcc not found, running tests without -race flag"; \
-		go test -cover ./...; \
+		go test -cover -timeout 5m ./...; \
 	fi
 
 ## lint: Run golangci-lint (if installed)
