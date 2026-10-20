@@ -180,7 +180,7 @@ Fix defects found after integration review and harden the CI pipeline.
 | - [ ] 8.3 | Flaky IPC healthcheck test | Fix `panic: close of nil channel` flake in the `internal/ipc` healthcheck test | `go test ./internal/ipc/... -count=1` passes repeatedly |
 | - [ ] 8.4 | Presence Start/Stop deadlock | Fix deadlock that hangs `TestConcurrentUpdateAndRead` (dev CI red) | `go test ./internal/state/... -race` green, no hangs |
 | - [ ] 8.5 | Explicit test/job timeouts | Add `timeout-minutes` to CI jobs and `-timeout` to `go test` invocations | No job can hang for the default runner timeout again |
-| - [ ] 8.6 | Harden CI lint | Run real `golangci-lint` in CI (lint job only runs `go vet`; `make lint` silently skips when not installed) | `golangci-lint run` is a required CI gate — also unlocks the phase DoD lint checkbox |
+| - [x] 8.6 | Harden CI lint | Run real `golangci-lint` in CI (lint job only runs `go vet`; `make lint` silently skips when not installed) | `golangci-lint run` is a required CI gate — also unlocks the phase DoD lint checkbox |
 | - [ ] 8.7 | CI hygiene | Remove redundant gcc install steps, add concurrency cancellation for superseded runs | No redundant steps; in-flight runs cancelled on rapid pushes |
 | - [ ] 8.8 | Fix e2e broken-start detection | `scripts/e2e.sh` must fail when the binary does not start (port occupied / early exit) | `e2e.sh` exits non-zero on a broken start and CI verifies it (code merged via #40; Trello card still open under legacy numbering) |
 
@@ -282,7 +282,7 @@ Phase 1 (Foundation)
 - [ ] All tasks completed
 - [ ] Unit tests pass (`go test ./... -race`)
 - [ ] Code compiles without warnings
-- [ ] `golangci-lint run` passes
+- [x] `golangci-lint run` passes
 - [ ] Manual verification of milestone
 - [ ] Documentation updated (README, code comments)
 

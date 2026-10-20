@@ -1,0 +1,31 @@
+# golangci-lint v2 configuration (https://golangci-lint.run/usage/configuration/).
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  exclusions:
+    presets:
+      # Well-known, safe-to-ignore error returns (fmt.Fprint*, (*os.File).Close,
+      # io.Closer.Close, ...). Everything else is still reported.
+      - std-error-handling
+    rules:
+      # Pre-existing errcheck findings are out of scope for task 8.6 (adding the
+      # lint gate, not refactoring error handling). They are unchecked cleanup
+      # calls in tests (deferred Close/Shutdown/SetDeadline, fixture setup) and
+      # best-effort cleanup/shutdown in cmd/proxy/main.go and internal/server/hub.go.
+      # Real error paths in the other production packages remain enforced.
+      - path: _test\.go
+        linters:
+          - errcheck
+      - path: ^cmd/proxy/main\.go$
+        linters:
+          - errcheck
+      - path: ^internal/server/hub\.go$
+        linters:
+          - errcheck

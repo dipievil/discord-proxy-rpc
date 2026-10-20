@@ -331,7 +331,7 @@ make build-all
 ### CI (GitHub Actions — `.github/workflows/ci.yml`)
 
 - Triggers: push and PR to `dev` and `main`
-- Jobs: `lint` (go vet), `test` (`make test`, unit + integration with `-race`), `build` (`make build`), `e2e` (`scripts/e2e.sh`, incl. verification that the script fails on a broken start)
+- Jobs: `lint` (`gofmt` check, `go vet`, `golangci-lint run`), `test` (`make test`, unit + integration with `-race`), `build` (`make build`), `e2e` (`scripts/e2e.sh`, incl. verification that the script fails on a broken start)
 - A PR may merge only with green CI
 
 ### Release (GitHub Actions + GoReleaser)

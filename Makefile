@@ -37,13 +37,13 @@ test:
 		go test -cover -timeout 5m ./...; \
 	fi
 
-## lint: Run golangci-lint (if installed)
+## lint: Run golangci-lint (required; fails if not installed)
 lint:
-	@if command -v golangci-lint > /dev/null 2>&1; then \
-		golangci-lint run; \
-	else \
-		echo "golangci-lint not installed, skipping. Install: https://golangci-lint.run/usage/install/"; \
-	fi
+	@command -v golangci-lint > /dev/null 2>&1 || { \
+		echo "golangci-lint not installed. Install: https://golangci-lint.run/usage/install/"; \
+		exit 1; \
+	}
+	@golangci-lint run
 
 ## run: Run the proxy server
 run:

@@ -5,14 +5,14 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/dragsbruh/gopresence"
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/pkg/types"
+	"github.com/dragsbruh/gopresence"
 )
 
 const maxActivityButtons = 2
 
 var (
-	ErrNilActivity    = errors.New("ipc: activity is nil")
+	ErrNilActivity     = errors.New("ipc: activity is nil")
 	ErrInvalidActivity = errors.New("ipc: invalid activity")
 )
 
