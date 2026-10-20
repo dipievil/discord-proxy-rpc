@@ -36,7 +36,7 @@ type Assets struct {
 }
 
 type Party struct {
-	ID   string  `json:"id,omitempty"`
+	ID   string `json:"id,omitempty"`
 	Size [2]int `json:"size,omitempty"`
 }
 
