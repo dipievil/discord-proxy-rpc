@@ -197,7 +197,7 @@ Close the remaining security gaps and cut the first public release.
 
 | ID | Task | Description | Acceptance Criteria |
 |----|------|-------------|---------------------|
-| [ ] 9.1 | REST/dashboard auth coverage | Extend token auth beyond the WS upgrade to `/` and `/api/*` (decide for `/health*`) | With `auth.enabled: true`, sensitive endpoints reject unauthenticated requests |
+| [x] 9.1 | REST/dashboard auth coverage | Extend token auth beyond the WS upgrade to `/` and `/api/*` (health probes stay open for k8s) | With `auth.enabled: true`, sensitive endpoints reject unauthenticated requests |
 | [ ] 9.2 | Rate-limit REST/dashboard endpoints | Apply the per-IP rate limiter to HTTP routes, not only WS upgrades | Abuse of REST endpoints is throttled with 429 |
 | [ ] 9.3 | Fail fast on missing `discord.client_id` | Refuse to start with a clear error when `discord.client_id` is empty | Misconfigured runs abort at startup instead of silently flapping |
 | [ ] 9.4 | Cut first release | Merge `dev` → `main`, tag `v0.1.0`, publish release binaries | v0.1.0 published with binaries for all platforms |
