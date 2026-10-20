@@ -243,14 +243,13 @@ Every config key can be set via an environment variable with the `PROXY_` prefix
 | `server.rate_limit_window` | `PROXY_SERVER_RATE_LIMIT_WINDOW` | `1m` |
 | `auth.enabled` | `PROXY_AUTH_ENABLED` | `false` |
 | `auth.token` | `PROXY_AUTH_TOKEN` | `""` |
-| `auth.token` | `PROXY_TOKEN` | `""` |
 | `mdns.enabled` | `PROXY_MDNS_ENABLED` | `true` |
 | `mdns.instance_name` | `PROXY_MDNS_INSTANCE_NAME` | `""` |
 | `mdns.service_type` | `PROXY_MDNS_SERVICE_TYPE` | `_discord-proxy._tcp` |
 | `logging.level` | `PROXY_LOGGING_LEVEL` | `info` |
 | `logging.format` | `PROXY_LOGGING_FORMAT` | `json` |
 
-The legacy `PROXY_TOKEN` env var is also supported for `auth.token`, but it **takes precedence over `PROXY_AUTH_TOKEN` when both are set**. It is deprecated and scheduled for removal — use `PROXY_AUTH_TOKEN` only.
+> **Breaking change**: the legacy `PROXY_TOKEN` env var was removed. `PROXY_AUTH_TOKEN` is now the sole env source for `auth.token` — update any scripts or containers still setting `PROXY_TOKEN`.
 
 ---
 
@@ -484,7 +483,7 @@ Multi-stage build: `golang:1.26-alpine` compiles a static binary, `alpine:3.20` 
 
 ### 5. Auth token rejected
 
-- Verify `auth.enabled: true` and `auth.token` / `PROXY_TOKEN` match on both server and client.
+- Verify `auth.enabled: true` and `auth.token` / `PROXY_AUTH_TOKEN` match on both server and client (the legacy `PROXY_TOKEN` env var is no longer read).
 - The token must be sent as `Authorization: Bearer <token>` on the WebSocket upgrade request.
 - Check for trailing whitespace or newline characters in the token.
 
@@ -494,7 +493,7 @@ Multi-stage build: `golang:1.26-alpine` compiles a static binary, `alpine:3.20` 
 
 - **Read-only by design** -- The proxy never sends `SET_ACTIVITY` or any write command to Discord. It only observes.
 - **LAN only** -- Binds to `0.0.0.0` by default. Restrict via firewall rules or bind to `127.0.0.1` and use a VPN (e.g., Tailscale) for remote access.
-- **Optional token auth** -- Enable `auth.enabled: true` and set a strong token via `PROXY_TOKEN`. Without auth, any device on the LAN can connect.
+- **Optional token auth** -- Enable `auth.enabled: true` and set a strong token via `PROXY_AUTH_TOKEN` (or `auth.token` in the config file). Without auth, any device on the LAN can connect.
 - **No persistence** -- No database, no log files, no presence data stored on disk. Everything is in-memory and lost on restart.
 - **mDNS is informational only** -- The mDNS TXT record contains only the API version (`v=1`). No sensitive data is broadcast.
 - **WebSocket traffic is plaintext** -- For encrypted transport, place the proxy behind a TLS-terminating reverse proxy (e.g., nginx, Caddy).
