@@ -171,7 +171,7 @@ func capture(clientID string, duration time.Duration, out string) (*captureSumma
 		fmt.Fprintf(os.Stderr, "connected to %s as %s (capturing for %s)\n", path, ready.User.Username, duration)
 	}
 
-	var sink io.Writer = io.Discard
+	var sink = io.Discard
 	if out != "" {
 		f, err := os.Create(out)
 		if err != nil {
@@ -189,6 +189,7 @@ func capture(clientID string, duration time.Duration, out string) (*captureSumma
 	// Closing the socket after the capture window unblocks the pending Read.
 	timer := time.AfterFunc(duration, func() { _ = raw.Close() })
 
+	var writeErr error
 	for {
 		opcode, data, err := raw.Read()
 		if err != nil {
@@ -203,12 +204,21 @@ func capture(clientID string, duration time.Duration, out string) (*captureSumma
 			if err != nil {
 				continue
 			}
-			writer.Write(line)
-			writer.WriteByte('\n')
+			if _, err := writer.Write(line); err != nil {
+				writeErr = err
+				break
+			}
+			if err := writer.WriteByte('\n'); err != nil {
+				writeErr = err
+				break
+			}
 		}
 	}
 	timer.Stop()
 
+	if writeErr != nil {
+		return nil, fmt.Errorf("write capture output: %w", writeErr)
+	}
 	return summary, nil
 }
 
