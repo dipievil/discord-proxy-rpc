@@ -194,13 +194,16 @@
     function handleMessage(msg) {
         switch (msg.type) {
             case 'presence':
-            case 'current':
+            case 'current': {
                 if (msg.client_id) {
                     clientId = msg.client_id;
                 }
                 currentActivity = msg.payload;
-                renderPresence(msg.payload);
+                const view = presenceView(msg.payload);
+                updateSourceNotice(view.source, view.hasActivity);
+                renderPresence(view.activity);
                 break;
+            }
             case 'state':
                 updateConnectionStatus(msg.status);
                 if (msg.client_id) {
@@ -210,6 +213,36 @@
             default:
                 console.warn('[Dashboard] Unknown message type:', msg.type);
         }
+    }
+
+    // presenceView normalizes a presence/current payload into the fields the
+    // dashboard renders. A source of "none" means the proxy has no activity
+    // source at all, so the (null) activity must not be rendered as an empty
+    // activity -- the UI shows an explicit notice instead.
+    function presenceView(payload) {
+        const snapshot = payload || {};
+        const source = snapshot.source || 'none';
+        const hasActivity = source !== 'none' && snapshot.activity != null;
+        return {
+            source: source,
+            hasActivity: hasActivity,
+            activity: hasActivity ? snapshot.activity : null
+        };
+    }
+
+    function updateSourceNotice(source, hasActivity) {
+        const notice = document.getElementById('source-notice');
+        if (!notice) return;
+
+        if (hasActivity) {
+            notice.hidden = true;
+            return;
+        }
+
+        notice.hidden = false;
+        notice.textContent = source === 'none'
+            ? 'No activity source: Discord IPC exposes no command to read another app\u2019s Rich Presence, so this proxy cannot observe activity yet.'
+            : 'No activity reported by the source right now.';
     }
 
     function renderPresence(activity) {
@@ -527,7 +560,8 @@
             buildSubprotocols: buildSubprotocols,
             base64UrlEncode: base64UrlEncode,
             getWsPath: getWsPath,
-            resolveToken: resolveToken
+            resolveToken: resolveToken,
+            presenceView: presenceView
         };
     }
 })();

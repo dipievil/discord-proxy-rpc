@@ -15,7 +15,7 @@ func TestPresenceMessageRoundTrip(t *testing.T) {
 		Type:    types.ActivityPlaying,
 	}
 
-	original, err := NewPresenceMessage(activity)
+	original, err := NewPresenceMessage(testSnapshot(activity))
 	if err != nil {
 		t.Fatalf("NewPresenceMessage: %v", err)
 	}
@@ -37,15 +37,45 @@ func TestPresenceMessageRoundTrip(t *testing.T) {
 		t.Fatal("Payload is nil")
 	}
 
-	var got types.Activity
-	if err := json.Unmarshal(decoded.Payload, &got); err != nil {
-		t.Fatalf("Unmarshal payload: %v", err)
+	snapshot := testDecodeSnapshot(t, decoded.Payload, "presence")
+	if snapshot.Source != types.SourceIPC {
+		t.Errorf("Source = %q, want %q", snapshot.Source, types.SourceIPC)
 	}
+	got := testActivityFromSnapshot(t, snapshot, "presence")
 	if got.Details != activity.Details {
 		t.Errorf("Details = %q, want %q", got.Details, activity.Details)
 	}
 	if got.State != activity.State {
 		t.Errorf("State = %q, want %q", got.State, activity.State)
+	}
+}
+
+func TestPresenceMessageNoSource(t *testing.T) {
+	msg, err := NewPresenceMessage(types.PresenceSnapshot{Source: types.SourceNone})
+	if err != nil {
+		t.Fatalf("NewPresenceMessage: %v", err)
+	}
+
+	const wantPayload = `{"source":"none","activity":null}`
+	if got := string(msg.Payload); got != wantPayload {
+		t.Errorf("Payload = %s, want %s", got, wantPayload)
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var decoded ServerMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	snapshot := testDecodeSnapshot(t, decoded.Payload, "presence")
+	if snapshot.Source != types.SourceNone {
+		t.Errorf("Source = %q, want %q", snapshot.Source, types.SourceNone)
+	}
+	if snapshot.Activity != nil {
+		t.Errorf("Activity = %+v, want nil", snapshot.Activity)
 	}
 }
 
@@ -113,7 +143,7 @@ func TestCurrentMessageRoundTrip(t *testing.T) {
 		Type:    types.ActivityListening,
 	}
 
-	original, err := NewCurrentMessage(activity)
+	original, err := NewCurrentMessage(testSnapshot(activity))
 	if err != nil {
 		t.Fatalf("NewCurrentMessage: %v", err)
 	}
@@ -135,10 +165,11 @@ func TestCurrentMessageRoundTrip(t *testing.T) {
 		t.Fatal("Payload is nil")
 	}
 
-	var got types.Activity
-	if err := json.Unmarshal(decoded.Payload, &got); err != nil {
-		t.Fatalf("Unmarshal payload: %v", err)
+	snapshot := testDecodeSnapshot(t, decoded.Payload, "current")
+	if snapshot.Source != types.SourceIPC {
+		t.Errorf("Source = %q, want %q", snapshot.Source, types.SourceIPC)
 	}
+	got := testActivityFromSnapshot(t, snapshot, "current")
 	if got.Details != activity.Details {
 		t.Errorf("Details = %q, want %q", got.Details, activity.Details)
 	}
@@ -300,7 +331,7 @@ func TestActivityFieldPreservation(t *testing.T) {
 		Type: types.ActivityPlaying,
 	}
 
-	msg, err := NewPresenceMessage(activity)
+	msg, err := NewPresenceMessage(testSnapshot(activity))
 	if err != nil {
 		t.Fatalf("NewPresenceMessage: %v", err)
 	}
@@ -315,10 +346,8 @@ func TestActivityFieldPreservation(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	var got types.Activity
-	if err := json.Unmarshal(decoded.Payload, &got); err != nil {
-		t.Fatalf("Unmarshal payload: %v", err)
-	}
+	snapshot := testDecodeSnapshot(t, decoded.Payload, "presence")
+	got := testActivityFromSnapshot(t, snapshot, "presence")
 
 	if got.Details != activity.Details {
 		t.Errorf("Details = %q, want %q", got.Details, activity.Details)
@@ -390,7 +419,7 @@ func TestStateMessageOmitsPayload(t *testing.T) {
 }
 
 func TestPresenceMessageOmitsClientID(t *testing.T) {
-	msg, err := NewPresenceMessage(types.Activity{Details: "test"})
+	msg, err := NewPresenceMessage(testSnapshot(types.Activity{Details: "test"}))
 	if err != nil {
 		t.Fatalf("NewPresenceMessage: %v", err)
 	}
@@ -407,7 +436,7 @@ func TestPresenceMessageOmitsClientID(t *testing.T) {
 }
 
 func TestPresenceMessageOmitsStatus(t *testing.T) {
-	msg, err := NewPresenceMessage(types.Activity{Details: "test"})
+	msg, err := NewPresenceMessage(testSnapshot(types.Activity{Details: "test"}))
 	if err != nil {
 		t.Fatalf("NewPresenceMessage: %v", err)
 	}

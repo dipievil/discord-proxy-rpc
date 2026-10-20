@@ -26,7 +26,7 @@ func TestShutdownTimeout(t *testing.T) {
 	testSubscribe(t, conn, []string{MsgTypePresence})
 
 	activity := types.Activity{Details: "Test Game", Type: types.ActivityPlaying}
-	presenceMsg, _ := NewPresenceMessage(activity)
+	presenceMsg, _ := NewPresenceMessage(testSnapshot(activity))
 	hub.Broadcast(presenceMsg)
 
 	msg := testRead(t, conn)
@@ -66,7 +66,7 @@ func TestShutdownGoroutineLeak(t *testing.T) {
 		}
 
 		activity := types.Activity{Details: "Leak Test", Type: types.ActivityPlaying}
-		presenceMsg, _ := NewPresenceMessage(activity)
+		presenceMsg, _ := NewPresenceMessage(testSnapshot(activity))
 		hub.Broadcast(presenceMsg)
 
 		for _, conn := range conns {
@@ -163,7 +163,7 @@ func TestFullProxyShutdownSequence(t *testing.T) {
 	hubCtx, hubCancel := context.WithCancel(context.Background())
 	go hub.Run(hubCtx)
 
-	srv := NewServer(hub, logger, WithGetCurrentPresence(presence.Current))
+	srv := NewServer(hub, logger, WithGetCurrentPresence(presence.Snapshot))
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
@@ -174,7 +174,7 @@ func TestFullProxyShutdownSequence(t *testing.T) {
 	testSubscribe(t, conn, []string{MsgTypePresence})
 
 	activity := types.Activity{Details: "Full Test", Type: types.ActivityPlaying}
-	presenceMsg, _ := NewPresenceMessage(activity)
+	presenceMsg, _ := NewPresenceMessage(testSnapshot(activity))
 	hub.Broadcast(presenceMsg)
 
 	testRead(t, conn)

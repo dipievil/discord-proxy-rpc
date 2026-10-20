@@ -183,6 +183,7 @@ Fix defects found after integration review and harden the CI pipeline.
 | - [ ] 8.6 | Harden CI lint | Run real `golangci-lint` in CI (lint job only runs `go vet`; `make lint` silently skips when not installed) | `golangci-lint run` is a required CI gate — also unlocks the phase DoD lint checkbox |
 | - [ ] 8.7 | CI hygiene | Remove redundant gcc install steps, add concurrency cancellation for superseded runs | No redundant steps; in-flight runs cancelled on rapid pushes |
 | - [ ] 8.8 | Fix e2e broken-start detection | `scripts/e2e.sh` must fail when the binary does not start (port occupied / early exit) | `e2e.sh` exits non-zero on a broken start and CI verifies it (code merged via #40; Trello card still open under legacy numbering) |
+| - [ ] 8.11 | Activity-feed contract (Codex P1 on #44) | Discord IPC cannot observe another application's Rich Presence, so the presence contract must say so: add an explicit `source: "none"` state to `/api/presence`, WS `presence`/`current` and the dashboard, and ship `cmd/ipc-capture` to prove the limitation on a host | Snapshots carry `{"source":"none\|ipc","activity":Activity\|null}`; an empty feed is never indistinguishable from "no source"; SPEC/README/AGENTS revised; unit tests green |
 
 > Note: the GitHub Actions CI task was renumbered from Phase 8 to **1.12** and lives in Phase 1 (card in Done).
 
