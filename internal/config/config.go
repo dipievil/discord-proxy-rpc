@@ -159,7 +159,19 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("unmarshalling config: %w", err)
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	return &cfg, nil
+}
+
+func (c *Config) Validate() error {
+	if strings.TrimSpace(c.Discord.ClientID) == "" {
+		return fmt.Errorf("discord.client_id is required but empty: set it in config.yaml under \"discord.client_id\" or via the PROXY_DISCORD_CLIENT_ID environment variable (Discord Developer Portal > General Information > Application ID)")
+	}
+
+	return nil
 }
 
 func SetupLogger(level, format string) (*zap.Logger, error) {
