@@ -113,11 +113,24 @@ The summary ends with either `No ACTIVITY frame was observed…` (confirming the
 | `/health` | GET | **Rich liveness probe** — includes IPC state | `{"status":"ok","ipc":"<state>"}` | — |
 | `/healthz` | GET | **Minimal liveness probe** (k8s-compatible) | `{"status":"ok"}` | — |
 | `/readyz` | GET | **Readiness probe** — reflects IPC connectivity | `{"status":"ok","ipc":"connected"}` | `{"status":"not ready","ipc":"disconnected"}` |
+| `/metrics` | GET | **Prometheus metrics** — only registered when `metrics.enabled: true` | Prometheus text exposition | — |
 
 **Endpoint rationale:**
 - `/health` — Rich variant for debugging/monitoring; always returns 200 with IPC state embedded
 - `/healthz` — Minimal, spec-conformant liveness probe for Kubernetes; always returns 200 if process is alive
 - `/readyz` — Readiness probe for Kubernetes; returns 200 only when IPC is connected, 503 otherwise
+- `/metrics` — Prometheus scrape endpoint (v1.1); disabled by default so nothing is exposed unless asked for
+
+#### Metrics (v1.1)
+
+When `metrics.enabled: true`, the server registers `/metrics` (Prometheus text format, `client_golang`). Collectors are fed from the live components — no duplicated counting logic:
+
+| Metric | Type | Source |
+|--------|------|--------|
+| `discord_proxy_ws_connected_clients` | gauge | `Hub.ClientCount()` at scrape time |
+| `discord_proxy_presence_coalesced_sends_total` | counter | presence subscription callback (fires once per coalesced flush) |
+| `discord_proxy_ipc_connected` | gauge (0/1) | IPC state getter at scrape time (`connected` ⇒ 1) |
+| `discord_proxy_rate_limit_rejections_total` | counter | `RateLimiter` denial counter |
 
 #### WebSocket Protocol
 
@@ -466,7 +479,7 @@ ENTRYPOINT ["discord-proxy"]
 
 - Write support (remote `SET_ACTIVITY` with per-device auth)
 - Multiple Discord accounts (multiple IPC connections)
-- Prometheus metrics endpoint (`/metrics`)
+- ~~Prometheus metrics endpoint (`/metrics`)~~ — implemented in v1.1 (task 10.1), see Metrics section
 - TUI dashboard (`bubbletea`)
 - System tray indicator (host machine)
 - Encrypted WS (mTLS)

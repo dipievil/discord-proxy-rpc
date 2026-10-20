@@ -29,3 +29,6 @@ mdns:
 logging:
   level: "info"              # debug, info, warn, error
   format: "json"             # json or console
+
+metrics:
+  enabled: false             # expose Prometheus metrics on /metrics

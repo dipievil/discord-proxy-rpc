@@ -47,7 +47,17 @@ func main() {
 	hub.ClientID = cfg.Discord.ClientID
 	go hub.Run(ctx)
 
+	rateLimiter := server.NewRateLimiter(cfg.Server.RateLimitPerIP, cfg.Server.RateLimitWindow)
+
+	var metrics *server.Metrics
+	if cfg.Metrics.Enabled {
+		metrics = server.NewMetrics(hub, func() string { return client.State().String() }, rateLimiter)
+	}
+
 	presence.Subscribe(func(update state.PresenceUpdate) {
+		if metrics != nil {
+			metrics.RecordPresenceSend()
+		}
 		activity := update.Activity
 		msg, err := server.NewPresenceMessage(types.PresenceSnapshot{
 			Source:   types.SourceIPC,
@@ -64,11 +74,15 @@ func main() {
 		server.WithGetCurrentPresence(presence.Snapshot),
 		server.WithGetIPCState(func() string { return client.State().String() }),
 		server.WithWSPath(cfg.Server.WsPath),
-		server.WithRateLimiter(server.NewRateLimiter(cfg.Server.RateLimitPerIP, cfg.Server.RateLimitWindow)),
+		server.WithRateLimiter(rateLimiter),
 		server.WithConnectionTracker(server.NewConnectionTracker(cfg.Server.MaxWSConnections)),
 	}
 	if cfg.Auth.Enabled {
 		opts = append(opts, server.WithAuth(server.BearerAuthFunc(cfg.Auth, logger)))
+	}
+	if metrics != nil {
+		opts = append(opts, server.WithMetrics(metrics))
+		logger.Info("Prometheus metrics enabled", zap.String("path", "/metrics"))
 	}
 
 	httpServer := server.NewServer(hub, logger, opts...)
