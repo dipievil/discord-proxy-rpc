@@ -70,10 +70,7 @@ func runDashboardJS(t *testing.T) *goja.Runtime {
 
 	// Minimal URLSearchParams used by resolveToken for the ?token= query param.
 	vm.Set("URLSearchParams", func(call goja.ConstructorCall) *goja.Object {
-		query := call.Argument(0).String()
-		if strings.HasPrefix(query, "?") {
-			query = query[1:]
-		}
+		query := strings.TrimPrefix(call.Argument(0).String(), "?")
 
 		params := map[string]string{}
 		for _, pair := range strings.Split(query, "&") {
