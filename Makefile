@@ -5,7 +5,7 @@ BINARY_NAME := discord-proxy
 BIN_DIR     := bin
 MODULE      := github.com/discord-proxy-rpc/discord-proxy-rpc
 
-.PHONY: build build-linux build-windows build-all test lint run dev release clean e2e
+.PHONY: build build-linux build-windows build-all test lint run dev release clean e2e capture
 
 ## build: Build for current platform
 build:
@@ -74,3 +74,8 @@ e2e:
 		echo "gcc not found, e2e tests require race detector. Install gcc to run e2e tests."; \
 		exit 1; \
 	fi
+
+## capture: Record raw Discord IPC frames (requires CLIENT_ID=<discord-app-id>)
+##          Optional: DURATION (default 60s), OUT (JSON Lines capture file)
+capture:
+	go run ./cmd/ipc-capture -client-id "$(CLIENT_ID)" -duration "$${DURATION:-60s}" $${OUT:+-out "$$OUT"}

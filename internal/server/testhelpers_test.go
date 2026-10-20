@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -103,14 +104,48 @@ func testRequestCurrent(t *testing.T, conn *websocket.Conn) {
 	testWrite(t, conn, NewGetCurrentMessage())
 }
 
-// testDecodeActivity unmarshals a presence or current payload. Checking the
-// error keeps a malformed payload from surfacing as a confusing
-// "Details = "", want ..." mismatch.
-func testDecodeActivity(t *testing.T, payload json.RawMessage, what string) types.Activity {
+// testSnapshot builds a presence snapshot carrying an IPC-sourced activity, the
+// shape the production wiring emits.
+func testSnapshot(activity types.Activity) types.PresenceSnapshot {
+	return types.PresenceSnapshot{Source: types.SourceIPC, Activity: &activity}
+}
+
+// testDecodeSnapshot unmarshals a presence or current payload into the snapshot
+// envelope. Checking the error keeps a malformed payload from surfacing as a
+// confusing mismatch.
+func testDecodeSnapshot(t *testing.T, payload json.RawMessage, what string) types.PresenceSnapshot {
 	t.Helper()
-	var activity types.Activity
-	if err := json.Unmarshal(payload, &activity); err != nil {
+	var snapshot types.PresenceSnapshot
+	if err := json.Unmarshal(payload, &snapshot); err != nil {
 		t.Fatalf("decode %s payload: %v", what, err)
 	}
-	return activity
+	return snapshot
+}
+
+// testDecodeActivity returns the activity carried by a presence or current
+// payload, failing the test if the snapshot has no activity.
+func testDecodeActivity(t *testing.T, payload json.RawMessage, what string) types.Activity {
+	t.Helper()
+	return testActivityFromSnapshot(t, testDecodeSnapshot(t, payload, what), what)
+}
+
+// testDecodeSnapshotBody decodes a presence snapshot straight from an HTTP
+// response body.
+func testDecodeSnapshotBody(t *testing.T, r io.Reader, what string) types.PresenceSnapshot {
+	t.Helper()
+	var snapshot types.PresenceSnapshot
+	if err := json.NewDecoder(r).Decode(&snapshot); err != nil {
+		t.Fatalf("decode %s body: %v", what, err)
+	}
+	return snapshot
+}
+
+// testActivityFromSnapshot returns the activity carried by a snapshot, failing
+// the test if the snapshot has no activity.
+func testActivityFromSnapshot(t *testing.T, snapshot types.PresenceSnapshot, what string) types.Activity {
+	t.Helper()
+	if snapshot.Activity == nil {
+		t.Fatalf("%s snapshot has no activity (source=%q)", what, snapshot.Source)
+	}
+	return *snapshot.Activity
 }

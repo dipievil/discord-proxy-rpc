@@ -150,7 +150,7 @@ func TestWSSubscribeViaHandler(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	activity := types.Activity{Details: "Test Game", Type: types.ActivityPlaying}
-	presenceMsg, _ := NewPresenceMessage(activity)
+	presenceMsg, _ := NewPresenceMessage(testSnapshot(activity))
 	hub.Broadcast(presenceMsg)
 
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -173,8 +173,8 @@ func TestWSGetCurrentViaHandler(t *testing.T) {
 	defer cancel()
 
 	activity := types.Activity{Details: "Current Game", Type: types.ActivityPlaying}
-	hub.GetCurrentPresence = func() types.Activity {
-		return activity
+	hub.GetCurrentPresence = func() types.PresenceSnapshot {
+		return testSnapshot(activity)
 	}
 
 	handler := NewWSHandler(hub, zap.NewNop())
@@ -211,12 +211,56 @@ func TestWSGetCurrentViaHandler(t *testing.T) {
 		t.Errorf("type = %q, want %q", resp.Type, MsgTypeCurrent)
 	}
 
-	var got types.Activity
-	if err := json.Unmarshal(resp.Payload, &got); err != nil {
-		t.Fatalf("Unmarshal payload: %v", err)
-	}
+	got := testDecodeActivity(t, resp.Payload, "current")
 	if got.Details != "Current Game" {
 		t.Errorf("Details = %q, want %q", got.Details, "Current Game")
+	}
+}
+
+func TestWSGetCurrentNoSource(t *testing.T) {
+	hub, cancel := newTestHub(t)
+	defer cancel()
+
+	hub.GetCurrentPresence = func() types.PresenceSnapshot {
+		return types.PresenceSnapshot{Source: types.SourceNone}
+	}
+
+	handler := NewWSHandler(hub, zap.NewNop())
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL(server), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	getMsg := NewGetCurrentMessage()
+	data, _ := json.Marshal(getMsg)
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		t.Fatalf("WriteMessage: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, received, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+
+	var resp ServerMessage
+	if err := json.Unmarshal(received, &resp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if resp.Type != MsgTypeCurrent {
+		t.Errorf("type = %q, want %q", resp.Type, MsgTypeCurrent)
+	}
+
+	const wantPayload = `{"source":"none","activity":null}`
+	if got := string(resp.Payload); got != wantPayload {
+		t.Errorf("payload = %s, want %s", got, wantPayload)
 	}
 }
 
@@ -242,7 +286,7 @@ func TestWSPresencePushViaHandler(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	activity := types.Activity{Details: "Pushed Game", State: "Rank 1", Type: types.ActivityPlaying}
-	presenceMsg, _ := NewPresenceMessage(activity)
+	presenceMsg, _ := NewPresenceMessage(testSnapshot(activity))
 	hub.Broadcast(presenceMsg)
 
 	stateMsg := NewStateMessage(StateConnected)
@@ -302,7 +346,7 @@ func TestWSMultipleClients(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	activity := types.Activity{Details: "Multi Client", Type: types.ActivityPlaying}
-	msg, _ := NewPresenceMessage(activity)
+	msg, _ := NewPresenceMessage(testSnapshot(activity))
 	hub.Broadcast(msg)
 
 	for i, conn := range conns {

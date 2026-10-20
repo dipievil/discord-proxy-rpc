@@ -414,3 +414,70 @@ func TestDashboardResolveTokenFromUrl(t *testing.T) {
 		t.Errorf("stored token = %q, want %q", stored, "url-token")
 	}
 }
+
+func TestDashboardPresenceView(t *testing.T) {
+	vm := runDashboardJS(t)
+	fn := dashboardFn(t, vm, "presenceView")
+
+	tests := []struct {
+		name            string
+		payload         map[string]interface{}
+		wantSource      string
+		wantHasActivity bool
+		wantDetails     string
+	}{
+		{
+			name:       "no source",
+			payload:    map[string]interface{}{"source": "none", "activity": nil},
+			wantSource: "none",
+		},
+		{
+			name:            "ipc source with activity",
+			payload:         map[string]interface{}{"source": "ipc", "activity": map[string]interface{}{"details": "Playing"}},
+			wantSource:      "ipc",
+			wantHasActivity: true,
+			wantDetails:     "Playing",
+		},
+		{
+			name:       "ipc source without activity",
+			payload:    map[string]interface{}{"source": "ipc", "activity": nil},
+			wantSource: "ipc",
+		},
+		{
+			name:       "missing source is treated as no source",
+			payload:    map[string]interface{}{"activity": map[string]interface{}{"details": "Playing"}},
+			wantSource: "none",
+		},
+		{
+			name:       "empty payload",
+			payload:    map[string]interface{}{},
+			wantSource: "none",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := fn(goja.Undefined(), vm.ToValue(tt.payload))
+			if err != nil {
+				t.Fatalf("presenceView call: %v", err)
+			}
+
+			obj := got.ToObject(vm)
+			if src := obj.Get("source").String(); src != tt.wantSource {
+				t.Errorf("source = %q, want %q", src, tt.wantSource)
+			}
+			if has := obj.Get("hasActivity").ToBoolean(); has != tt.wantHasActivity {
+				t.Errorf("hasActivity = %v, want %v", has, tt.wantHasActivity)
+			}
+
+			activity := obj.Get("activity")
+			if tt.wantHasActivity {
+				if details := activity.ToObject(vm).Get("details").String(); details != tt.wantDetails {
+					t.Errorf("activity.details = %q, want %q", details, tt.wantDetails)
+				}
+			} else if !goja.IsNull(activity) {
+				t.Errorf("activity = %v, want null", activity)
+			}
+		})
+	}
+}

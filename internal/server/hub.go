@@ -42,7 +42,7 @@ type Hub struct {
 	done               chan struct{}
 	doneOnce           sync.Once
 	ClientID           string
-	GetCurrentPresence func() types.Activity
+	GetCurrentPresence func() types.PresenceSnapshot
 }
 
 func NewHub(logger *zap.Logger) *Hub {
@@ -218,8 +218,8 @@ func (c *Client) ReadPump() {
 			c.hub.logger.Debug("client subscribed", zap.String("client", c.id), zap.Strings("events", msg.SubscribeEvents))
 		case MsgTypeGetCurrent:
 			if c.hub.GetCurrentPresence != nil {
-				activity := c.hub.GetCurrentPresence()
-				resp, err := NewCurrentMessage(activity, c.hub.ClientID)
+				snapshot := c.hub.GetCurrentPresence()
+				resp, err := NewCurrentMessage(snapshot, c.hub.ClientID)
 				if err != nil {
 					c.hub.logger.Error("failed to create current message", zap.Error(err))
 					continue

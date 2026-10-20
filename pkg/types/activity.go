@@ -45,6 +45,34 @@ type Button struct {
 	URL   string `json:"url"`
 }
 
+// ActivitySource identifies where a presence snapshot was read from. It makes
+// an activity's provenance explicit so an empty feed is never mistaken for
+// "no activity".
+type ActivitySource string
+
+const (
+	// SourceNone means the proxy has no activity source: even while the IPC
+	// socket is connected, Discord's local IPC exposes no command that reads
+	// another application's Rich Presence. This is the expected value today
+	// (see docs/implementation/SPEC.md, "Activity source"), so a snapshot with
+	// SourceNone carries a nil Activity.
+	SourceNone ActivitySource = "none"
+
+	// SourceIPC means the snapshot was produced from a Discord IPC ACTIVITY
+	// frame. Discord does not currently push such frames, so this value is
+	// only reachable once a real activity source is wired up.
+	SourceIPC ActivitySource = "ipc"
+)
+
+// PresenceSnapshot is the payload of /api/presence and the WebSocket
+// "presence" and "current" messages. Activity is nil when Source is
+// SourceNone; it deliberately omits omitempty so the null is explicit on the
+// wire.
+type PresenceSnapshot struct {
+	Source   ActivitySource `json:"source"`
+	Activity *Activity      `json:"activity"`
+}
+
 func (a *Activity) IsEmpty() bool {
 	return a.Details == "" &&
 		a.State == "" &&

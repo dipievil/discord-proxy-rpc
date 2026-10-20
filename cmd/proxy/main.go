@@ -16,6 +16,7 @@ import (
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/internal/mdns"
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/internal/server"
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/internal/state"
+	"github.com/discord-proxy-rpc/discord-proxy-rpc/pkg/types"
 )
 
 func main() {
@@ -47,7 +48,11 @@ func main() {
 	go hub.Run(ctx)
 
 	presence.Subscribe(func(update state.PresenceUpdate) {
-		msg, err := server.NewPresenceMessage(update.Activity)
+		activity := update.Activity
+		msg, err := server.NewPresenceMessage(types.PresenceSnapshot{
+			Source:   types.SourceIPC,
+			Activity: &activity,
+		})
 		if err != nil {
 			logger.Error("failed to create presence message", zap.Error(err))
 			return
@@ -56,7 +61,7 @@ func main() {
 	})
 
 	opts := []server.ServerOption{
-		server.WithGetCurrentPresence(presence.Current),
+		server.WithGetCurrentPresence(presence.Snapshot),
 		server.WithGetIPCState(func() string { return client.State().String() }),
 		server.WithWSPath(cfg.Server.WsPath),
 		server.WithRateLimiter(server.NewRateLimiter(cfg.Server.RateLimitPerIP, cfg.Server.RateLimitWindow)),
