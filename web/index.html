@@ -21,6 +21,10 @@
         <section id="presence-card" class="card" aria-label="Rich Presence">
             <h2>Current Activity</h2>
 
+            <p id="source-notice" class="source-notice" role="status" aria-live="polite" hidden>
+                No activity source: Discord IPC exposes no command to read another app’s Rich Presence, so this proxy cannot observe activity yet.
+            </p>
+
             <div id="presence-type" class="field">
                 <span class="label">Type</span>
                 <span class="value" data-field="type">—</span>

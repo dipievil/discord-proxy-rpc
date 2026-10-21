@@ -13,17 +13,32 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt found unformatted files; run 'gofmt -w' on:"
+            echo "$unformatted"
+            exit 1
+          fi
+          echo "OK: all Go files are gofmt-clean"
       - name: go vet
         run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.15.0
 
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -38,6 +53,7 @@ jobs:
     name: Build
     needs: [lint, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

@@ -2,6 +2,8 @@
 
 This is Rich Presence agent that send activities to a running Discord on your LAN.
 
+**Activity source limitation.** Discord's local IPC socket (`discord-ipc-*`) is a client→Discord channel: it lets a client *set* its own activity (`SET_ACTIVITY`) but exposes no command to read another application's Rich Presence, and Discord does not push `ACTIVITY` frames to a client such as this proxy. The proxy therefore has **no activity source today**. The API, WebSocket and dashboard say so explicitly (`source: "none"`, `activity: null`) instead of showing a misleading empty feed. The IPC layer still handshakes and can parse an `ACTIVITY` frame, so it is ready once a real source exists. `cmd/ipc-capture` records raw IPC frames to prove the limitation on a given host. See `docs/implementation/SPEC.md`, "Activity source".
+
 ## General behaviour
 
 - For any decision that is not clear, ask user for clarification

@@ -19,7 +19,7 @@ func TestFullWSFlow(t *testing.T) {
 	activity := types.Activity{Details: "Test Game", State: "In Match", Type: types.ActivityPlaying}
 
 	hub, _, ts := newTestServer(t,
-		WithGetCurrentPresence(func() types.Activity { return activity }),
+		WithGetCurrentPresence(func() types.PresenceSnapshot { return testSnapshot(activity) }),
 	)
 
 	conn := testDial(t, ts)
@@ -29,7 +29,7 @@ func TestFullWSFlow(t *testing.T) {
 
 	testSubscribe(t, conn, []string{MsgTypePresence})
 
-	presenceMsg, _ := NewPresenceMessage(activity)
+	presenceMsg, _ := NewPresenceMessage(testSnapshot(activity))
 	hub.Broadcast(presenceMsg)
 
 	msg := testRead(t, conn)
@@ -37,10 +37,7 @@ func TestFullWSFlow(t *testing.T) {
 		t.Errorf("type = %q, want %q", msg.Type, MsgTypePresence)
 	}
 
-	var got types.Activity
-	if err := json.Unmarshal(msg.Payload, &got); err != nil {
-		t.Fatalf("unmarshal payload: %v", err)
-	}
+	got := testDecodeActivity(t, msg.Payload, "presence")
 	if got.Details != "Test Game" {
 		t.Errorf("Details = %q, want %q", got.Details, "Test Game")
 	}
@@ -62,7 +59,7 @@ func TestFullWSFlowFiltersUnsubscribedEvents(t *testing.T) {
 	hub.Broadcast(NewStateMessage(StateConnected))
 
 	activity := types.Activity{Details: "Game", Type: types.ActivityPlaying}
-	presenceMsg, _ := NewPresenceMessage(activity)
+	presenceMsg, _ := NewPresenceMessage(testSnapshot(activity))
 	hub.Broadcast(presenceMsg)
 
 	msg := testRead(t, conn)
@@ -88,7 +85,7 @@ func TestHubBroadcastToMultipleClients(t *testing.T) {
 	}
 
 	activity := types.Activity{Details: "Broadcast", Type: types.ActivityPlaying}
-	msg, _ := NewPresenceMessage(activity)
+	msg, _ := NewPresenceMessage(testSnapshot(activity))
 	hub.Broadcast(msg)
 
 	for i, conn := range conns {
@@ -201,7 +198,7 @@ func TestRESTEndpointsIntegration(t *testing.T) {
 	}
 
 	_, _, ts := newTestServer(t,
-		WithGetCurrentPresence(func() types.Activity { return activity }),
+		WithGetCurrentPresence(func() types.PresenceSnapshot { return testSnapshot(activity) }),
 		WithGetIPCState(func() string { return string(StateConnected) }),
 	)
 
@@ -235,8 +232,11 @@ func TestRESTEndpointsIntegration(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 		}
-		var got types.Activity
-		json.NewDecoder(resp.Body).Decode(&got)
+		snapshot := testDecodeSnapshotBody(t, resp.Body, "presence")
+		if snapshot.Source != types.SourceIPC {
+			t.Errorf("Source = %q, want %q", snapshot.Source, types.SourceIPC)
+		}
+		got := testActivityFromSnapshot(t, snapshot, "presence")
 		if got.Details != "REST Test" {
 			t.Errorf("Details = %q, want %q", got.Details, "REST Test")
 		}
@@ -346,7 +346,7 @@ func TestConcurrentWSConnections(t *testing.T) {
 	subWg.Wait()
 
 	activity := types.Activity{Details: "Concurrent", Type: types.ActivityPlaying}
-	presenceMsg, _ := NewPresenceMessage(activity)
+	presenceMsg, _ := NewPresenceMessage(testSnapshot(activity))
 	hub.Broadcast(presenceMsg)
 	hub.Broadcast(NewStateMessage(StateConnected))
 
@@ -402,7 +402,7 @@ func TestPresenceUpdateFlow(t *testing.T) {
 	currentActivity := types.Activity{Details: "Flow Game", State: "Queue", Type: types.ActivityPlaying}
 
 	hub, _, ts := newTestServer(t,
-		WithGetCurrentPresence(func() types.Activity { return currentActivity }),
+		WithGetCurrentPresence(func() types.PresenceSnapshot { return testSnapshot(currentActivity) }),
 	)
 
 	conn := testDial(t, ts)
@@ -417,10 +417,7 @@ func TestPresenceUpdateFlow(t *testing.T) {
 		t.Errorf("type = %q, want %q", resp.Type, MsgTypeCurrent)
 	}
 
-	var got types.Activity
-	if err := json.Unmarshal(resp.Payload, &got); err != nil {
-		t.Fatalf("unmarshal payload: %v", err)
-	}
+	got := testDecodeActivity(t, resp.Payload, "current")
 	if got.Details != "Flow Game" {
 		t.Errorf("Details = %q, want %q", got.Details, "Flow Game")
 	}
@@ -431,7 +428,7 @@ func TestPresenceUpdateFlow(t *testing.T) {
 	testSubscribe(t, conn, []string{MsgTypePresence})
 
 	updatedActivity := types.Activity{Details: "Flow Game", State: "In Match", Type: types.ActivityPlaying}
-	presenceMsg, _ := NewPresenceMessage(updatedActivity)
+	presenceMsg, _ := NewPresenceMessage(testSnapshot(updatedActivity))
 	hub.Broadcast(presenceMsg)
 
 	update := testRead(t, conn)
@@ -439,8 +436,7 @@ func TestPresenceUpdateFlow(t *testing.T) {
 		t.Errorf("update type = %q, want %q", update.Type, MsgTypePresence)
 	}
 
-	var updated types.Activity
-	json.Unmarshal(update.Payload, &updated)
+	updated := testDecodeActivity(t, update.Payload, "presence")
 	if updated.State != "In Match" {
 		t.Errorf("updated State = %q, want %q", updated.State, "In Match")
 	}
@@ -450,7 +446,7 @@ func TestMixedRESTAndWS(t *testing.T) {
 	activity := types.Activity{Details: "Mixed Test", Type: types.ActivityPlaying}
 
 	hub, _, ts := newTestServer(t,
-		WithGetCurrentPresence(func() types.Activity { return activity }),
+		WithGetCurrentPresence(func() types.PresenceSnapshot { return testSnapshot(activity) }),
 	)
 
 	conn := testDial(t, ts)
@@ -468,17 +464,18 @@ func TestMixedRESTAndWS(t *testing.T) {
 		t.Errorf("REST status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	var restActivity types.Activity
-	if err := json.NewDecoder(resp.Body).Decode(&restActivity); err != nil {
-		t.Fatalf("decode REST response: %v", err)
+	snapshot := testDecodeSnapshotBody(t, resp.Body, "REST presence")
+	if snapshot.Source != types.SourceIPC {
+		t.Errorf("REST Source = %q, want %q", snapshot.Source, types.SourceIPC)
 	}
+	restActivity := testActivityFromSnapshot(t, snapshot, "REST presence")
 	if restActivity.Details != "Mixed Test" {
 		t.Errorf("REST Details = %q, want %q", restActivity.Details, "Mixed Test")
 	}
 
 	testSubscribe(t, conn, []string{MsgTypePresence})
 
-	msg, _ := NewPresenceMessage(activity)
+	msg, _ := NewPresenceMessage(testSnapshot(activity))
 	hub.Broadcast(msg)
 
 	wsMsg := testRead(t, conn)

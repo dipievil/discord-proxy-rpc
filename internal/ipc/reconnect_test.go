@@ -342,11 +342,11 @@ func TestBackoffDoesNotOverflowAtLargeAttempts(t *testing.T) {
 
 func TestCappedDouble(t *testing.T) {
 	cases := []struct {
-		name   string
-		base   time.Duration
-		cap    time.Duration
-		times  int
-		want   time.Duration
+		name  string
+		base  time.Duration
+		cap   time.Duration
+		times int
+		want  time.Duration
 	}{
 		{"zero times", 5 * time.Second, 60 * time.Second, 0, 5 * time.Second},
 		{"below cap", 5 * time.Second, 60 * time.Second, 2, 20 * time.Second},
