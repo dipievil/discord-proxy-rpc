@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt found unformatted files; run 'gofmt -w' on:"
+            echo "$unformatted"
+            exit 1
+          fi
+          echo "OK: all Go files are gofmt-clean"
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.15.0
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+      - name: Install gcc (for race detector)
+        run: sudo apt-get update && sudo apt-get install -y gcc
+      - name: Run tests
+        run: make test
+
+  build:
+    name: Build
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+      - name: Build binary
+        run: make build
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: discord-proxy-linux-amd64
+          path: bin/discord-proxy
+
+  e2e:
+    name: E2E Tests
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+      - name: Install gcc (for race detector)
+        run: sudo apt-get update && sudo apt-get install -y gcc
+      - name: Run E2E tests
+        env:
+          E2E_PORT: 18765
+          E2E_SKIP_UNIT: "1"
+        run: scripts/e2e.sh
+      - name: Verify e2e fails on a broken start
+        env:
+          E2E_PORT: 18765
+          E2E_SKIP_UNIT: "1"
+          E2E_STARTUP_TIMEOUT: 10
+        run: |
+          # The port holder MUST outlive e2e.sh's bounded startup deadline
+          # (E2E_STARTUP_TIMEOUT, 10s above) by a wide margin, so e2e.sh can
+          # never succeed by outwaiting the holder: it must observe the
+          # occupied port and exit non-zero. 300s >> 10s and the e2e job
+          # timeout-minutes (10) still bounds the step.
+          python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",18765)); s.listen(1); time.sleep(300)' &
+          HOLDER=$!
+          sleep 1
+          if scripts/e2e.sh >/dev/null 2>&1; then
+            echo "::error::e2e.sh exited 0 on a broken start; CI would be green on a broken build"
+            kill "$HOLDER" 2>/dev/null || true
+            exit 1
+          fi
+          echo "OK: e2e.sh exited non-zero when the port was occupied"
+          kill "$HOLDER" 2>/dev/null || true

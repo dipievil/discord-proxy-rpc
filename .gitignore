@@ -27,6 +27,9 @@ go.work.sum
 # env file
 .env
 
+# opencode local tooling (delegator state, node_modules)
+.opencode/
+
 # Editor/IDE
 # .idea/
 # .vscode/

@@ -33,7 +33,7 @@ func unixPaths() []string {
 func windowsPaths() []string {
 	paths := make([]string, ipcNameCount)
 	for i := 0; i < ipcNameCount; i++ {
-		paths[i] = fmt.Sprintf(`\\?\pipe\discord-ipc-%d`, i)
+		paths[i] = fmt.Sprintf(`\\.\pipe\discord-ipc-%d`, i)
 	}
 	return paths
 }

@@ -40,7 +40,7 @@ func TestWindowsPathsUseNamedPipeFormat(t *testing.T) {
 	}
 	paths := IPCPaths()
 	for i, p := range paths {
-		expected := `\\?\pipe\discord-ipc-` + fmt.Sprintf("%d", i)
+		expected := `\\.\pipe\discord-ipc-` + fmt.Sprintf("%d", i)
 		if p != expected {
 			t.Errorf("path %d: expected %q, got %q", i, expected, p)
 		}

@@ -1,0 +1,31 @@
+discord:
+  client_id: ""              # REQUIRED - Discord Application ID
+  auto_reconnect: true
+  reconnect_base_interval: 5s
+  max_reconnect_interval: 60s
+  health_check_interval: 30s
+  health_check_timeout: 10s
+  coalesce_interval: 5s      # Buffer window for batching presence updates
+
+server:
+  host: "0.0.0.0"
+  port: 8765
+  ws_path: "/ws"
+  read_timeout: 10s
+  write_timeout: 10s
+  max_ws_connections: 100    # cap on concurrent WebSocket clients
+  rate_limit_per_ip: 10      # max WS upgrades per IP within the window
+  rate_limit_window: 1m      # rate-limit window
+
+auth:
+  enabled: false
+  token: ""                  # override via PROXY_AUTH_TOKEN env (legacy PROXY_TOKEN wins if both set; removal planned — task 9.6)
+
+mdns:
+  enabled: true
+  instance_name: ""          # empty = hostname
+  service_type: "_discord-proxy._tcp"
+
+logging:
+  level: "info"              # debug, info, warn, error
+  format: "json"             # json or console

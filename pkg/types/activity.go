@@ -36,13 +36,41 @@ type Assets struct {
 }
 
 type Party struct {
-	ID   string  `json:"id,omitempty"`
+	ID   string `json:"id,omitempty"`
 	Size [2]int `json:"size,omitempty"`
 }
 
 type Button struct {
 	Label string `json:"label"`
 	URL   string `json:"url"`
+}
+
+// ActivitySource identifies where a presence snapshot was read from. It makes
+// an activity's provenance explicit so an empty feed is never mistaken for
+// "no activity".
+type ActivitySource string
+
+const (
+	// SourceNone means the proxy has no activity source: even while the IPC
+	// socket is connected, Discord's local IPC exposes no command that reads
+	// another application's Rich Presence. This is the expected value today
+	// (see docs/implementation/SPEC.md, "Activity source"), so a snapshot with
+	// SourceNone carries a nil Activity.
+	SourceNone ActivitySource = "none"
+
+	// SourceIPC means the snapshot was produced from a Discord IPC ACTIVITY
+	// frame. Discord does not currently push such frames, so this value is
+	// only reachable once a real activity source is wired up.
+	SourceIPC ActivitySource = "ipc"
+)
+
+// PresenceSnapshot is the payload of /api/presence and the WebSocket
+// "presence" and "current" messages. Activity is nil when Source is
+// SourceNone; it deliberately omits omitempty so the null is explicit on the
+// wire.
+type PresenceSnapshot struct {
+	Source   ActivitySource `json:"source"`
+	Activity *Activity      `json:"activity"`
 }
 
 func (a *Activity) IsEmpty() bool {
@@ -53,6 +81,97 @@ func (a *Activity) IsEmpty() bool {
 		a.Party == nil &&
 		len(a.Buttons) == 0 &&
 		a.Type == ActivityPlaying
+}
+
+func (a Activity) Clone() Activity {
+	out := Activity{
+		Details: a.Details,
+		State:   a.State,
+		Type:    a.Type,
+	}
+	if a.Timestamps != nil {
+		ts := *a.Timestamps
+		out.Timestamps = &ts
+	}
+	if a.Assets != nil {
+		assets := *a.Assets
+		out.Assets = &assets
+	}
+	if a.Party != nil {
+		party := *a.Party
+		out.Party = &party
+	}
+	if a.Buttons != nil {
+		out.Buttons = make([]Button, len(a.Buttons))
+		copy(out.Buttons, a.Buttons)
+	}
+	return out
+}
+
+func (a Activity) Equals(other Activity) bool {
+	if a.Details != other.Details || a.State != other.State || a.Type != other.Type {
+		return false
+	}
+	if !timestampsEqual(a.Timestamps, other.Timestamps) {
+		return false
+	}
+	if !assetsEqual(a.Assets, other.Assets) {
+		return false
+	}
+	if !partyEqual(a.Party, other.Party) {
+		return false
+	}
+	if len(a.Buttons) != len(other.Buttons) {
+		return false
+	}
+	for i := range a.Buttons {
+		if a.Buttons[i].Label != other.Buttons[i].Label || a.Buttons[i].URL != other.Buttons[i].URL {
+			return false
+		}
+	}
+	return true
+}
+
+func timestampsEqual(a, b *Timestamps) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil {
+		return b.Start == 0 && b.End == 0
+	}
+	if b == nil {
+		return a.Start == 0 && a.End == 0
+	}
+	return a.Start == b.Start && a.End == b.End
+}
+
+func assetsEqual(a, b *Assets) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil {
+		return b.LargeImage == "" && b.LargeText == "" && b.SmallImage == "" && b.SmallText == ""
+	}
+	if b == nil {
+		return a.LargeImage == "" && a.LargeText == "" && a.SmallImage == "" && a.SmallText == ""
+	}
+	return a.LargeImage == b.LargeImage &&
+		a.LargeText == b.LargeText &&
+		a.SmallImage == b.SmallImage &&
+		a.SmallText == b.SmallText
+}
+
+func partyEqual(a, b *Party) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil {
+		return b.ID == "" && b.Size == [2]int{}
+	}
+	if b == nil {
+		return a.ID == "" && a.Size == [2]int{}
+	}
+	return a.ID == b.ID && a.Size == b.Size
 }
 
 func (a *Activity) MarshalJSON() ([]byte, error) {

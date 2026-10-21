@@ -2,6 +2,8 @@
 
 This is Rich Presence agent that send activities to a running Discord on your LAN.
 
+**Activity source limitation.** Discord's local IPC socket (`discord-ipc-*`) is a client→Discord channel: it lets a client *set* its own activity (`SET_ACTIVITY`) but exposes no command to read another application's Rich Presence, and Discord does not push `ACTIVITY` frames to a client such as this proxy. The proxy therefore has **no activity source today**. The API, WebSocket and dashboard say so explicitly (`source: "none"`, `activity: null`) instead of showing a misleading empty feed. The IPC layer still handshakes and can parse an `ACTIVITY` frame, so it is ready once a real source exists. `cmd/ipc-capture` records raw IPC frames to prove the limitation on a given host. See `docs/implementation/SPEC.md`, "Activity source".
+
 ## General behaviour
 
 - For any decision that is not clear, ask user for clarification
@@ -21,16 +23,20 @@ This is Rich Presence agent that send activities to a running Discord on your LA
 - Use *_env* file for sensitive information and never commit it to the repository
 - Always add unit tests for new features and bug fixes
 - Update any tests that are affected by new features or bug fixes
+- Ensure squash-merge PR titles follow conventional commit format (feat:, fix:, feat!:) to enable automatic version bumping via semantic-release.
+- GitHub Actions CI (`.github/workflows/ci.yml`) is the authoritative testing flow — a PR may merge only with green CI (lint, unit tests with -race, build, e2e); every new feature or bug fix must add or update unit tests in the same PR.
 
 ## Tasks management
 
 - Initial spec files are on folder `docs/implementation`. Follow it. If user ask for different approach update these files.
+- The PLAN.md checklist mirrors the Trello board: tick a task's checkbox only when its card is in Done; moving a card to Done requires ticking the matching checkbox (and untick it if the card is reopened).
 - Use Trello board `app-game-rpc`(6a81cb6c9ae0484b113e28bf) to track current and new stories
 - Stories are ordered by phases and tasks (1.1, 1.2, etc.). Should be completed in order, unless user ask for different approach
   - New stories with no blockers and dependencies are on `backlog` list
   - Tasks ready to start are on `To-do` list
   - On going tasks are on `Doing`
   - Tasks that cant be finished are on `Blocked` list
+  - Tasks under review are on `Code Review` list
   - Completed tasks should be on `Done` list
   - Tasks that are no needed anymore are on `Cancelled` list
 - Only start to work on tasks on `To-do` or `Doing` list

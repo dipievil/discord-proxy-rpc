@@ -4,6 +4,8 @@
 
 A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and exposes Rich Presence data over the local network via WebSocket + HTTP. Read-only — other devices can observe presence but not modify it.
 
+> **Activity source (important):** Discord's local IPC socket is a client→Discord channel. It allows a client to *set* its own activity (`SET_ACTIVITY`) but exposes **no command to read another application's Rich Presence**. Discord does not push `ACTIVITY` frames to a connected client such as this proxy. As a result the proxy currently has **no activity source** and cannot observe what the desktop client is doing; it says so explicitly instead of showing an empty feed. See [Activity source](#activity-source) for the contract and how to prove the limitation on your own setup.
+
 **Target platforms**: Linux, Windows (macOS supported via cross-compile)
 **Deployment**: Single static binary (Go), systemd/service or manual run
 **Discovery**: mDNS (zeroconf) for auto-discovery on LAN
@@ -44,6 +46,39 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
 
 ---
 
+## Activity source
+
+The proxy's job is to read the Discord desktop client's Rich Presence and re-broadcast it, but the IPC socket cannot deliver that data:
+
+- `discord-ipc-*` carries RPC requests from a client to the local Discord client. The only activity-related command is `SET_ACTIVITY` (a client publishing *its own* presence). There is no `GET_ACTIVITY`, and Discord does not dispatch another application's `ACTIVITY` as an unsolicited frame.
+- The proxy's IPC layer (`internal/ipc/`) still handshakes, keeps the connection alive, and parses any `ACTIVITY` frame it might receive, so it is ready the moment a real source exists. Until then **every snapshot is reported with `source: "none"`**.
+
+To make that state explicit — rather than a silent empty feed that looks like "no one is playing" — the presence contract carries a `source` alongside the (nullable) `activity`:
+
+```json
+{ "source": "none", "activity": null }
+```
+
+| `source` | Meaning |
+|----------|---------|
+| `"none"` | The proxy has no activity source. `activity` is always `null`. This is the expected value today. |
+| `"ipc"`  | The snapshot was produced from a Discord IPC `ACTIVITY` frame. `activity` is the parsed activity (non-null). |
+
+Both `/api/presence` and the WebSocket `presence` / `current` messages carry this snapshot envelope. The dashboard reads `source` and shows an explicit "No activity source" notice instead of an empty activity card.
+
+### Proving the limitation (capture harness)
+
+`cmd/ipc-capture` connects to the local Discord IPC socket, performs the handshake, and records every raw frame Discord sends for a bounded window, then reports whether any of them was an `ACTIVITY` frame:
+
+```bash
+# Run on the machine running the Discord desktop client, while a game is open:
+go run ./cmd/ipc-capture -client-id <discord-app-id> -duration 60s -out capture.jsonl
+```
+
+The summary ends with either `No ACTIVITY frame was observed…` (confirming there is no IPC source) or `Found N ACTIVITY frame(s)…`. Share `capture.jsonl` if a source turns out to exist, so the `ACTIVITY` frame can be wired into the proxy.
+
+---
+
 ## Components
 
 ### 1. IPC Client (`internal/ipc/`)
@@ -54,13 +89,13 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
   - Handshake (v=1, client_id from config)
   - Handle `READY` event → transition to `connected` state
   - Handle disconnect → trigger reconnection logic
-  - Parse `ACTIVITY` payloads → normalized internal struct
+  - Parse `ACTIVITY` frames → normalized internal struct **when any arrive**; Discord does not push another application's activity today, so this path is currently dormant (see [Activity source](#activity-source))
 - **Reconnection**: Exponential backoff: 5s, 10s, 20s, 40s, 60s (max), jitter ±10%
 - **Health**: Periodic PING (Discord IPC opcode 3) every 30s
 
 ### 2. Presence State Machine (`internal/state/`)
 
-- **Cache**: Single `Presence` struct (last known activity)
+- **Cache**: Single `Presence` struct (last known activity + whether a source has ever supplied one)
 - **Diff**: Deep compare new vs cached; only emit `PresenceUpdate` event on change
 - **Coalesce**: Buffer incoming IPC updates for 5s; emit latest at window end
 - **Thread-safety**: All access via mutex; callbacks executed async (non-blocking)
@@ -69,23 +104,42 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
 
 #### HTTP Endpoints
 
-| Route | Method | Description |
-|-------|--------|-------------|
-| `/` | GET | Dashboard SPA (embedded static files) |
-| `/ws` | GET | WebSocket upgrade → API |
-| `/api/presence` | GET | Current presence JSON (snapshot) |
-| `/api/state` | GET | IPC connection state JSON |
-| `/health` | GET | Liveness probe (returns 200 OK) |
+| Route | Method | Description | Response (200) | Response (503) |
+|-------|--------|-------------|----------------|----------------|
+| `/` | GET | Dashboard SPA (embedded static files) | `text/html` | — |
+| `/ws` | GET | WebSocket upgrade → API | `101 Switching Protocols` | — |
+| `/api/presence` | GET | Current presence snapshot (`{"source":"none\|ipc","activity":Activity\|null}`) | `PresenceSnapshot` object | — |
+| `/api/state` | GET | IPC connection state JSON | `{"status":"connected\|disconnected\|reconnecting"}` | — |
+| `/health` | GET | **Rich liveness probe** — includes IPC state | `{"status":"ok","ipc":"<state>"}` | — |
+| `/healthz` | GET | **Minimal liveness probe** (k8s-compatible) | `{"status":"ok"}` | — |
+| `/readyz` | GET | **Readiness probe** — reflects IPC connectivity | `{"status":"ok","ipc":"connected"}` | `{"status":"not ready","ipc":"disconnected"}` |
+
+**Endpoint rationale:**
+- `/health` — Rich variant for debugging/monitoring; always returns 200 with IPC state embedded
+- `/healthz` — Minimal, spec-conformant liveness probe for Kubernetes; always returns 200 if process is alive
+- `/readyz` — Readiness probe for Kubernetes; returns 200 only when IPC is connected, 503 otherwise
 
 #### WebSocket Protocol
+
+**Authentication handshake**
+
+When `auth.enabled: true`, the WS upgrade must carry the token either as an `Authorization: Bearer <token>` header (non-browser clients) or — for browser clients, which cannot set request headers — as a WebSocket subprotocol:
+
+```
+Sec-WebSocket-Protocol: proxy-token-<base64url(token)>
+```
+
+The server echoes the offered `proxy-token-*` subprotocol back on success so the browser handshake completes.
 
 **Server → Client (push)**
 
 ```json
-{ "type": "presence", "payload": { /* Activity object */ } }
-{ "type": "state", "status": "connected|disconnected|reconnecting" }
-{ "type": "current", "payload": { /* Activity object */ } }
+{ "type": "presence", "payload": { "source": "none", "activity": null } }
+{ "type": "state", "status": "connected|disconnected|reconnecting", "client_id": "optional Discord App ID" }
+{ "type": "current", "payload": { "source": "none", "activity": null }, "client_id": "optional Discord App ID" }
 ```
+
+`payload` on `presence` and `current` is a **presence snapshot** (see [Activity source](#activity-source)); `activity` is `null` whenever `source` is `"none"`. `client_id` (the Discord Application ID from `discord.client_id`) is included on `state` and `current` messages when configured, so clients can identify which Discord account the proxy is attached to.
 
 **Client → Server**
 
@@ -94,13 +148,43 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
 { "type": "get_current" }
 ```
 
+**Server → Client (error response)**
+
+Error frames are sent in direct response to a client message that could not be processed. They do not close the connection; the client may continue sending messages.
+
+```json
+{ "type": "error", "payload": { "code": "MSG_001", "message": "invalid message: ..." } }
+```
+
+| Code | Constant | Description |
+|------|----------|-------------|
+| `AUTH_001` | `ErrCodeUnauthorized` | WS upgrade rejected: auth enabled and token missing or invalid |
+| `MSG_001` | `ErrCodeInvalidMessage` | Malformed JSON, missing/unknown `type`, unknown event in `subscribe`, or any parse failure |
+| `INT_001` | `ErrCodeInternal` | Internal server error (including a recovered panic) |
+| `REQ_001` | `ErrCodePayloadTooLarge` | Request body exceeds the 1 MiB cap (HTTP 413) |
+| `REQ_002` | `ErrCodeRateLimited` | WS upgrade rate limit exceeded (HTTP 429) |
+| `REQ_003` | `ErrCodeTooManyConns` | Max concurrent WS connections reached (HTTP 503) |
+
+HTTP-level errors (auth failure, oversized body, rate limit, connection cap, recovered panic) use the same codes in a top-level JSON envelope: `{ "code": "<CODE>", "error": "<message>" }`. WS `error` frames instead nest them under `payload` as `{ "code", "message" }`.
+
+**Presence Snapshot** (payload of `presence` / `current` and body of `/api/presence`)
+
+```json
+{
+  "source": "none",
+  "activity": null
+}
+```
+
+`source` is `"none"` or `"ipc"`; `activity` carries the Activity Object below when `source` is `"ipc"`, and is `null` otherwise. `activity` is always present on the wire (it is not omitted).
+
 **Activity Object** (subset of Discord RPC spec)
 
 ```json
 {
   "details": "string",
   "state": "string",
-  "timestamps": { "start": 1234567890, "end": 1234567890 },
+  "timestamps": { "start": 1700000000000, "end": 1700003600000 },
   "assets": {
     "large_image": "string", "large_text": "string",
     "small_image": "string", "small_text": "string"
@@ -110,6 +194,8 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
   "type": 0
 }
 ```
+
+> `timestamps.start` / `timestamps.end` are Unix **milliseconds**, matching Discord's IPC protocol. The dashboard converts them for display.
 
 #### Hub (Broadcast Manager)
 
@@ -121,8 +207,12 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
 #### Auth (Optional)
 
 - Disabled by default
-- If enabled: static token via `Authorization: Bearer <token>` header on WS upgrade
-- Token from config/env (`PROXY_TOKEN`)
+- If enabled: static token required on the WS upgrade (see the authentication handshake above)
+- Primary token source: `auth.token` in config, overridable via the `PROXY_AUTH_TOKEN` env var
+- Legacy `PROXY_TOKEN` env var is still accepted; **when set it takes precedence over both `auth.token` and `PROXY_AUTH_TOKEN`** (explicit viper `Set` beats the env binding) — it is not a true fallback. Scheduled for removal (task 9.6); use `PROXY_AUTH_TOKEN` only
+- Token comparison is constant-time (`crypto/subtle`)
+- Browser clients (the dashboard) cannot set request headers; they send the token as a WebSocket subprotocol `proxy-token-<base64url(token)>` instead
+- **Known gap (deliberate in v1)**: REST/dashboard endpoints (`/`, `/api/*`, `/health*`) are NOT auth-gated in the current implementation — only the WS upgrade is. Tracked as future task 9.1.
 
 ### 4. mDNS Announcer (`internal/mdns/`)
 
@@ -144,6 +234,9 @@ discord:
   auto_reconnect: true
   reconnect_base_interval: 5s
   max_reconnect_interval: 60s
+  health_check_interval: 30s # IPC PING interval
+  health_check_timeout: 10s  # IPC PING response timeout
+  coalesce_interval: 5s      # Buffer window for batching presence updates
 
 server:
   host: "0.0.0.0"
@@ -151,10 +244,13 @@ server:
   ws_path: "/ws"
   read_timeout: 10s
   write_timeout: 10s
+  max_ws_connections: 100    # cap on concurrent WebSocket clients
+  rate_limit_per_ip: 10      # max WS upgrades per IP within the window
+  rate_limit_window: 1m      # rate-limit window
 
 auth:
   enabled: false
-  token: ""                  # override via PROXY_TOKEN env
+  token: ""                  # override via PROXY_AUTH_TOKEN env (legacy PROXY_TOKEN wins if both set; removal planned — task 9.6)
 
 mdns:
   enabled: true
@@ -172,6 +268,7 @@ logging:
 - **Tech**: Vanilla HTML/CSS/JS (no build step, no framework)
 - **Features**:
   - Connection status indicator (● green/red)
+  - **Activity source notice** — shows "No activity source" when the snapshot reports `source: "none"`, instead of an empty activity card
   - Presence fields: Details, State, Timestamps (live countdown), Assets (images), Party, Buttons
   - Real-time updates via WebSocket
   - "Copy JSON" button for debugging
@@ -192,28 +289,35 @@ logging:
 ```
 discord-proxy-rpc/
 ├── cmd/
-│   └── proxy/
-│       └── main.go           # Entry point, wiring, signal handling
+│   ├── proxy/
+│   │   └── main.go           # Entry point, wiring, signal handling
+│   └── ipc-capture/
+│       └── main.go           # Capture harness: records raw Discord IPC frames
 ├── internal/
 │   ├── config/
 │   │   └── config.go
 │   ├── ipc/
 │   │   ├── client.go
 │   │   ├── reconnect.go
+│   │   ├── healthcheck.go
 │   │   └── parser.go
 │   ├── server/
 │   │   ├── http.go
 │   │   ├── ws.go
 │   │   ├── hub.go
 │   │   ├── auth.go
-│   │   └── messages.go
+│   │   ├── errors.go
+│   │   ├── messages.go
+│   │   └── ratelimit.go
 │   ├── state/
 │   │   └── presence.go
 │   ├── mdns/
-│   │   └── announce.go
+│   │   ├── announce.go
+│   │   └── signal.go
 │   └── platform/
 │       └── ipc_path.go
 ├── web/
+│   ├── embed.go
 │   ├── index.html
 │   ├── app.js
 │   └── style.css
@@ -222,8 +326,11 @@ discord-proxy-rpc/
 │       └── activity.go
 ├── configs/
 │   └── config.example.yaml
+├── scripts/
+│   └── e2e.sh                # End-to-end smoke test against a real binary
 ├── .github/
 │   └── workflows/
+│       ├── ci.yml
 │       └── release.yml
 ├── go.mod
 ├── go.sum
@@ -238,18 +345,18 @@ discord-proxy-rpc/
 ## Dependencies
 
 ```go
-module github.com/seu-usuario/discord-proxy-rpc
+module github.com/discord-proxy-rpc/discord-proxy-rpc
 
-go 1.26
+go 1.26.5
 
 require (
-    github.com/dragsbruh/gopresence v0.0.0-20260104...
-    github.com/gorilla/websocket v1.5.1
-    github.com/grandcat/zeroconf v0.0.0-20240319...
-    github.com/spf13/viper v1.19.0
-    github.com/spf13/cobra v1.8.0
-    go.uber.org/zap v1.26.0
-    gopkg.in/yaml.v3 v3.0.1
+    github.com/dop251/goja v0.0.0-20241024094426-79f3a7efcdbd
+    github.com/dragsbruh/gopresence v0.0.0-20260104125204-049c09d5d051
+    github.com/google/uuid v1.6.0
+    github.com/gorilla/websocket v1.5.3
+    github.com/grandcat/zeroconf v1.0.0
+    github.com/spf13/viper v1.21.0
+    go.uber.org/zap v1.28.0
 )
 ```
 
@@ -270,13 +377,28 @@ GOOS=windows GOARCH=amd64 go build -o bin/discord-proxy-windows-amd64.exe ./cmd/
 make build-all
 ```
 
+### CI (GitHub Actions — `.github/workflows/ci.yml`)
+
+- Triggers: push and PR to `dev` and `main`
+- Jobs: `lint` (`gofmt` check, `go vet`, `golangci-lint run`), `test` (`make test`, unit + integration with `-race`), `build` (`make build`), `e2e` (`scripts/e2e.sh`, incl. verification that the script fails on a broken start)
+- A PR may merge only with green CI
+
 ### Release (GitHub Actions + GoReleaser)
 
-- Trigger: push tag `v*`
+- Trigger: push to `main`
+- Process:
+    1. `version` job runs semantic-release to determine version bump, creates Git tag.
+    2. If a new release, `build` job cross-compiles binaries for 5 platforms.
+    3. `draft-release` job creates a draft GitHub Release with the generated notes and uploads binaries.
 - Outputs: Linux (amd64, arm64), Windows (amd64), macOS (amd64, arm64)
-- Artifacts: binaries + checksums + release notes
+- Artifacts: binaries attached to draft release (review before publishing)
 
 ### Docker
+
+Multi-stage build (builder + Alpine runtime). The runtime user is configurable so it can match the host
+desktop-session user that owns Discord's IPC socket (`--build-arg APP_UID/APP_GID`, or `docker run --user`);
+documented mounts: the host `$XDG_RUNTIME_DIR` (read-only) for `discord-ipc-*` and `config.yaml` at
+`/etc/discord-proxy-rpc/config.yaml` (read-only).
 
 ```dockerfile
 FROM golang:1.26-alpine AS builder
@@ -285,7 +407,11 @@ COPY . .
 RUN go build -o /out/discord-proxy ./cmd/proxy
 
 FROM alpine:3.20
+ARG APP_UID=10001
+ARG APP_GID=10001
+RUN addgroup -g "${APP_GID}" appuser && adduser -D -H -u "${APP_UID}" -G appuser appuser
 COPY --from=builder /out/discord-proxy /usr/local/bin/
+USER appuser
 EXPOSE 8765
 ENTRYPOINT ["discord-proxy"]
 ```
@@ -315,7 +441,12 @@ ENTRYPOINT ["discord-proxy"]
 
 - **Read-only**: No `SET_ACTIVITY` command exposed
 - **LAN only**: Binds to `0.0.0.0` by default; restrict via firewall or `host: "127.0.0.1"` + VPN (Tailscale)
-- **Optional token auth**: Enable `auth.enabled: true` + set `PROXY_TOKEN` for shared-secret auth
+- **Optional token auth**: Enable `auth.enabled: true` + set `PROXY_AUTH_TOKEN` for shared-secret auth on the WS upgrade; comparison is constant-time. The legacy `PROXY_TOKEN` env var currently wins when both are set (removal tracked as task 9.6). REST/dashboard endpoints are NOT auth-gated yet (tracked as task 9.1)
+- **WS rate limiting**: Per-IP limiter on WS upgrades (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 10 upgrades per minute per IP); excess upgrades get HTTP 429 `REQ_002`
+- **Max WS connections**: Concurrent client cap (`server.max_ws_connections`, default 100); excess upgrades get HTTP 503 `REQ_003`
+- **Request body cap**: Requests declaring `Content-Length` over 1 MiB are rejected with HTTP 413 `REQ_001`; unknown-length (chunked) bodies are capped via `MaxBytesReader`, so any read past 1 MiB fails. The current handlers never read request bodies (all routes are read-only), so an oversized chunked body is ignored rather than rejected with 413
+- **Panic recovery**: `RecoveryMiddleware` wraps the HTTP mux (plus an inner recover in the WS handler); a panicking handler returns HTTP 500 `INT_001` instead of crashing the process
+- **Cross-origin protection**: The WS upgrader rejects cross-origin requests (gorilla/websocket default `CheckOrigin`); no wildcard CORS headers are emitted
 - **No persistence**: No database, no logs of presence data beyond memory
 - **mDNS**: Only announces service existence; no sensitive data in TXT records
 

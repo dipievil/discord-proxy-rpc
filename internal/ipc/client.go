@@ -71,12 +71,13 @@ type Client struct {
 	paths   []string
 	timeout time.Duration
 
-	mu       sync.Mutex
-	ipcConn  *gopresenceipc.Client
-	presence *presence.Client
-	user     string
-	state    State
-	events   chan Event
+	mu          sync.Mutex
+	ipcConn     *gopresenceipc.Client
+	presence    *presence.Client
+	user        string
+	state       State
+	events      chan Event
+	healthCheck *HealthCheckManager
 }
 
 // New returns a Client for the given Discord application and logger.
@@ -163,7 +164,18 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 
 	events := c.events
-	defer close(events)
+	// Clear the active session's channel before closing it, so Events() returns
+	// nil once the session ends. Consumers that re-fetch Events() in a loop would
+	// otherwise range the same closed channel forever and spin instead of waiting
+	// for the next connection.
+	defer func() {
+		c.mu.Lock()
+		if c.events == events {
+			c.events = nil
+		}
+		c.mu.Unlock()
+		close(events)
+	}()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -192,6 +204,13 @@ func (c *Client) Run(ctx context.Context) error {
 			c.setState(StateDisconnected)
 			c.emitTerminalEvent(events, Event{Opcode: op, Err: errors.New("ipc connection closed by Discord")})
 			return nil
+		case OpPong:
+			c.mu.Lock()
+			hc := c.healthCheck
+			c.mu.Unlock()
+			if hc != nil {
+				hc.HandlePong()
+			}
 		case OpFrame:
 			frame, parseErr := presence.ParseFrame(data)
 			if parseErr != nil {
@@ -214,6 +233,14 @@ func (c *Client) SendRaw(opcode int32, data []byte) error {
 		return errors.New("ipc: not connected")
 	}
 	return c.ipcConn.Write(opcode, data)
+}
+
+// SetHealthCheck attaches a health check manager to the client. The manager
+// is notified when PONG frames arrive and can trigger reconnection on timeout.
+func (c *Client) SetHealthCheck(hc *HealthCheckManager) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.healthCheck = hc
 }
 
 // Close terminates the current IPC session.
