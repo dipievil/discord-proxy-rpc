@@ -25,6 +25,7 @@ type subscriber struct {
 
 type Presence struct {
 	cached       types.Activity
+	hasSource    bool
 	lastNotified types.Activity
 	mu           sync.RWMutex
 	subscribers  map[uint64]*subscriber
@@ -57,6 +58,7 @@ func (p *Presence) Start(ctx context.Context) {
 	p.stopCh = make(chan struct{})
 	p.done = make(chan struct{})
 	p.stopped = false
+	p.hasSource = false
 	p.lastNotified = types.Activity{}
 	stopCh := p.stopCh
 	done := p.done
@@ -88,6 +90,7 @@ func (p *Presence) Update(activity types.Activity) {
 	}
 
 	p.cached = activity.Clone()
+	p.hasSource = true
 	p.gen++
 	gen := p.gen
 
@@ -101,6 +104,20 @@ func (p *Presence) Current() types.Activity {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.cached.Clone()
+}
+
+// Snapshot returns the current presence together with its provenance. A
+// snapshot with Source == types.SourceNone (and a nil Activity) means the state
+// machine has never received an activity from a wired source, so consumers can
+// distinguish "no source" from "a source produced an empty activity".
+func (p *Presence) Snapshot() types.PresenceSnapshot {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if !p.hasSource {
+		return types.PresenceSnapshot{Source: types.SourceNone}
+	}
+	activity := p.cached.Clone()
+	return types.PresenceSnapshot{Source: types.SourceIPC, Activity: &activity}
 }
 
 func (p *Presence) Subscribe(fn func(PresenceUpdate)) func() {

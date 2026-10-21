@@ -5,7 +5,7 @@ BINARY_NAME := discord-proxy
 BIN_DIR     := bin
 MODULE      := github.com/discord-proxy-rpc/discord-proxy-rpc
 
-.PHONY: build build-linux build-windows build-all test lint run dev release clean e2e
+.PHONY: build build-linux build-windows build-all test lint run dev release clean e2e capture
 
 ## build: Build for current platform
 build:
@@ -31,19 +31,19 @@ build-all:
 ##      Falls back to no race detector if gcc is unavailable
 test:
 	@if command -v gcc > /dev/null 2>&1; then \
-		CGO_ENABLED=1 go test -race -cover ./...; \
+		CGO_ENABLED=1 go test -race -cover -timeout 5m ./...; \
 	else \
 		echo "gcc not found, running tests without -race flag"; \
-		go test -cover ./...; \
+		go test -cover -timeout 5m ./...; \
 	fi
 
-## lint: Run golangci-lint (if installed)
+## lint: Run golangci-lint (required; fails if not installed)
 lint:
-	@if command -v golangci-lint > /dev/null 2>&1; then \
-		golangci-lint run; \
-	else \
-		echo "golangci-lint not installed, skipping. Install: https://golangci-lint.run/usage/install/"; \
-	fi
+	@command -v golangci-lint > /dev/null 2>&1 || { \
+		echo "golangci-lint not installed. Install: https://golangci-lint.run/usage/install/"; \
+		exit 1; \
+	}
+	@golangci-lint run
 
 ## run: Run the proxy server
 run:
@@ -74,3 +74,8 @@ e2e:
 		echo "gcc not found, e2e tests require race detector. Install gcc to run e2e tests."; \
 		exit 1; \
 	fi
+
+## capture: Record raw Discord IPC frames (requires CLIENT_ID=<discord-app-id>)
+##          Optional: DURATION (default 60s), OUT (JSON Lines capture file)
+capture:
+	go run ./cmd/ipc-capture -client-id "$(CLIENT_ID)" -duration "$${DURATION:-60s}" $${OUT:+-out "$$OUT"}
