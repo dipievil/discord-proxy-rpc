@@ -5,11 +5,15 @@ BINARY_NAME := discord-proxy
 BIN_DIR     := bin
 MODULE      := github.com/discord-proxy-rpc/discord-proxy-rpc
 
-.PHONY: build build-linux build-windows build-all test lint run dev release clean e2e capture
+.PHONY: build build-linux build-windows build-all tui test lint run dev release clean e2e capture
 
 ## build: Build for current platform
 build:
 	go build -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/proxy
+
+## tui: Build the terminal dashboard (TUI consumer) for the current platform
+tui:
+	go build -o $(BIN_DIR)/$(BINARY_NAME)-tui ./cmd/tui
 
 ## build-linux: Build for Linux amd64
 build-linux:
