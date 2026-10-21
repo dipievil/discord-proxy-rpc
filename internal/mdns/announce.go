@@ -11,10 +11,16 @@ import (
 )
 
 const (
-	defaultServiceType = "_discord-proxy._tcp"
-	fallbackName       = "discord-proxy"
-	domain             = "local."
-	txtAPIVersion      = "v=1"
+	// DefaultServiceType is the mDNS service type the proxy advertises
+	// itself under. Discovery tools (cmd/discover) browse for it.
+	DefaultServiceType = "_discord-proxy._tcp"
+	// Domain is the mDNS domain the service is registered in.
+	Domain = "local."
+	// TXTAPIVersion is the TXT record (a single key=value string) that
+	// carries the advertised API version.
+	TXTAPIVersion = "v=1"
+
+	fallbackName = "discord-proxy"
 )
 
 var hostnameFunc = os.Hostname
@@ -31,7 +37,7 @@ func NewAdvertiser(cfg config.MdnsConfig, port int, logger *zap.Logger) (*Advert
 		return nil, fmt.Errorf("mdns: invalid port %d", port)
 	}
 	if cfg.ServiceType == "" {
-		cfg.ServiceType = defaultServiceType
+		cfg.ServiceType = DefaultServiceType
 	}
 	return &Advertiser{
 		cfg:    cfg,
@@ -57,9 +63,9 @@ func (a *Advertiser) Advertise() error {
 	server, err := zeroconf.Register(
 		instance,
 		a.cfg.ServiceType,
-		domain,
+		Domain,
 		a.port,
-		[]string{txtAPIVersion},
+		[]string{TXTAPIVersion},
 		nil,
 	)
 	if err != nil {
