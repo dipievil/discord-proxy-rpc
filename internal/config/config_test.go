@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -219,6 +220,40 @@ func TestProxyTokenOverridesProxyAuthToken(t *testing.T) {
 
 	if cfg.Auth.Token != "primary-token" {
 		t.Errorf("auth.token = %q, want %q", cfg.Auth.Token, "primary-token")
+	}
+}
+
+func TestValidateMissingClientID(t *testing.T) {
+	cfg := &Config{}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for missing discord.client_id")
+	}
+	if !strings.Contains(err.Error(), "discord.client_id") {
+		t.Errorf("error %q does not name the field discord.client_id", err)
+	}
+}
+
+func TestValidateBlankClientID(t *testing.T) {
+	cfg := &Config{}
+	cfg.Discord.ClientID = "   \t "
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for whitespace-only discord.client_id")
+	}
+	if !strings.Contains(err.Error(), "discord.client_id") {
+		t.Errorf("error %q does not name the field discord.client_id", err)
+	}
+}
+
+func TestValidateValidConfig(t *testing.T) {
+	cfg := &Config{}
+	cfg.Discord.ClientID = "123456789012345678"
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() with valid client_id: %v", err)
 	}
 }
 
