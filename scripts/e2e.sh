@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BINARY="/tmp/discord-proxy-e2e"
 BINARY_LOG="/tmp/discord-proxy-e2e.log"
+COOKIE_JAR="/tmp/discord-proxy-e2e-cookies"
 PORT="${E2E_PORT:-18765}"
 SKIP_UNIT="${E2E_SKIP_UNIT:-0}"
 # Bounded startup/health deadline: the proxy must serve /health within this
@@ -21,12 +22,14 @@ cleanup() {
         kill "$PID" 2>/dev/null || true
         wait "$PID" 2>/dev/null || true
     fi
-    rm -f "$BINARY" "$BINARY_LOG"
+    rm -f "$BINARY" "$BINARY_LOG" "$COOKIE_JAR"
 }
 trap cleanup EXIT
 
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
+
+http_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"; }
 
 summary() {
     echo ""
@@ -165,6 +168,119 @@ if [[ "$READY" -eq 1 ]]; then
 else
     dump_binary_log
     fail "Server did not become ready on port ${PORT} within ${STARTUP_TIMEOUT}s"
+    summary
+    exit 1
+fi
+
+# --- Phase 4b: Binary E2E with auth enabled ---
+# With auth on, the data surface (dashboard + /api/*) must reject anonymous
+# requests, health probes stay open for k8s, and the token must be accepted as
+# an Authorization header and as ?token= on the dashboard.
+echo "--- Phase 4b: Binary E2E (auth enabled) ---"
+
+AUTH_TOKEN="e2e-auth-token"
+
+# The phase-4 server is still running on ${PORT}; stop it before reusing the port.
+kill "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true
+PID=""
+rm -f "$BINARY_LOG" "$COOKIE_JAR"
+
+PROXY_DISCORD_CLIENT_ID="000000000000000000" \
+PROXY_DISCORD_AUTO_RECONNECT="false" \
+PROXY_SERVER_HOST="127.0.0.1" \
+PROXY_SERVER_PORT="$PORT" \
+PROXY_SERVER_WS_PATH="/ws" \
+PROXY_AUTH_ENABLED="true" \
+PROXY_AUTH_TOKEN="$AUTH_TOKEN" \
+PROXY_MDNS_ENABLED="false" \
+PROXY_LOGGING_LEVEL="error" \
+PROXY_LOGGING_FORMAT="console" \
+    "$BINARY" >"$BINARY_LOG" 2>&1 &
+PID=$!
+
+echo "  Waiting up to ${STARTUP_TIMEOUT}s for auth-enabled server on port ${PORT}..."
+READY=0
+DEADLINE=$((SECONDS + STARTUP_TIMEOUT))
+while (( SECONDS < DEADLINE )); do
+    if ! kill -0 "$PID" 2>/dev/null; then
+        set +e
+        wait "$PID"
+        exit_code=$?
+        set -e
+        PID=""
+        dump_binary_log
+        fail "Binary (auth-enabled) exited during startup (exit code ${exit_code})"
+        summary
+        exit 1
+    fi
+    if curl -sf --max-time 1 "$BASE/health" >/dev/null 2>&1; then
+        READY=1
+        break
+    fi
+    sleep 0.5
+done
+
+if [[ "$READY" -eq 1 ]]; then
+    pass "Auth-enabled server became ready on port ${PORT}"
+
+    for ep in /health /healthz; do
+        CODE=$(http_code "$BASE$ep")
+        if [[ "$CODE" == "200" ]]; then
+            pass "${ep} stays open without a token (auth enabled)"
+        else
+            fail "${ep} returned ${CODE} without a token, want 200"
+        fi
+    done
+
+    for ep in /api/presence /api/state /; do
+        CODE=$(http_code "$BASE$ep")
+        if [[ "$CODE" == "401" ]]; then
+            pass "${ep} returns 401 without a token (auth enabled)"
+        else
+            fail "${ep} returned ${CODE} without a token, want 401"
+        fi
+    done
+
+    for ep in /api/presence /; do
+        CODE=$(http_code -H "Authorization: Bearer ${AUTH_TOKEN}" "$BASE$ep")
+        if [[ "$CODE" == "200" ]]; then
+            pass "${ep} accepts the bearer token (auth enabled)"
+        else
+            fail "${ep} returned ${CODE} with a valid bearer token, want 200"
+        fi
+    done
+
+    CODE=$(http_code -H "Authorization: Bearer wrong-token" "$BASE/api/presence")
+    if [[ "$CODE" == "401" ]]; then
+        pass "/api/presence rejects a wrong bearer token (auth enabled)"
+    else
+        fail "/api/presence returned ${CODE} with a wrong token, want 401"
+    fi
+
+    CODE=$(http_code -c "$COOKIE_JAR" "$BASE/?token=${AUTH_TOKEN}")
+    if [[ "$CODE" == "200" && -s "$COOKIE_JAR" ]]; then
+        pass "/ accepts the ?token= parameter and sets an auth cookie (auth enabled)"
+    else
+        fail "/ with ?token= returned ${CODE} and did not set an auth cookie"
+    fi
+
+    CODE=$(http_code -b "$COOKIE_JAR" "$BASE/app.js")
+    if [[ "$CODE" == "200" ]]; then
+        pass "/app.js authenticates with the auth cookie (auth enabled)"
+    else
+        fail "/app.js returned ${CODE} with the auth cookie, want 200"
+    fi
+
+    CODE=$(http_code "$BASE/app.js")
+    if [[ "$CODE" == "401" ]]; then
+        pass "/app.js returns 401 without a token (auth enabled)"
+    else
+        fail "/app.js returned ${CODE} without a token, want 401"
+    fi
+else
+    dump_binary_log
+    fail "Auth-enabled server did not become ready on port ${PORT} within ${STARTUP_TIMEOUT}s"
     summary
     exit 1
 fi
