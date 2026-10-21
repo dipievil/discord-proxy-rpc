@@ -33,8 +33,8 @@ func TestNewAdvertiserEmptyServiceType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if a.cfg.ServiceType != defaultServiceType {
-		t.Errorf("service type = %q, want %q", a.cfg.ServiceType, defaultServiceType)
+	if a.cfg.ServiceType != DefaultServiceType {
+		t.Errorf("service type = %q, want %q", a.cfg.ServiceType, DefaultServiceType)
 	}
 }
 
@@ -106,13 +106,13 @@ func TestInstanceFallbackToDefault(t *testing.T) {
 }
 
 func TestTxtAPIVersionConstant(t *testing.T) {
-	if txtAPIVersion != "v=1" {
-		t.Errorf("txtAPIVersion = %q, want %q", txtAPIVersion, "v=1")
+	if TXTAPIVersion != "v=1" {
+		t.Errorf("TXTAPIVersion = %q, want %q", TXTAPIVersion, "v=1")
 	}
 }
 
 func TestTxtRecordIncludesVersion(t *testing.T) {
-	txtRecords := []string{txtAPIVersion}
+	txtRecords := []string{TXTAPIVersion}
 	found := false
 	for _, r := range txtRecords {
 		if r == "v=1" {
