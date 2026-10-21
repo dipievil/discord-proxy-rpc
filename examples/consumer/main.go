@@ -95,7 +95,8 @@ func consume(ctx context.Context, addr, token string) (bool, error) {
 	go func() {
 		select {
 		case <-ctx.Done():
-			conn.WriteControl(
+			// Best-effort close frame; the connection is closed either way.
+			_ = conn.WriteControl(
 				websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, "client shutting down"),
 				time.Now().Add(time.Second),
