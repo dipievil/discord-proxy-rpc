@@ -176,7 +176,7 @@ Fix defects found after integration review and harden the CI pipeline.
 | ID | Task | Description | Acceptance Criteria |
 |----|------|-------------|---------------------|
 | - [x] 8.1 | Windows Discord pipe path | Return the actual Windows named-pipe path (`\\.\pipe\discord-ipc-{0..9}`) from the platform resolver | Windows build resolves a real Discord pipe path |
-| - [x] 8.2 | Bind documented auth token env | Bind `PROXY_AUTH_TOKEN` in config, keeping legacy `PROXY_TOKEN` as fallback | Documented env vars actually set `auth.token` |
+| - [x] 8.2 | Bind documented auth token env | Bind `PROXY_AUTH_TOKEN` in config, keeping legacy `PROXY_TOKEN` as fallback (historical: the legacy `PROXY_TOKEN` fallback was later removed by task 9.6) | Documented env vars actually set `auth.token` |
 | - [ ] 8.3 | Flaky IPC healthcheck test | Fix `panic: close of nil channel` flake in the `internal/ipc` healthcheck test | `go test ./internal/ipc/... -count=1` passes repeatedly |
 | - [ ] 8.4 | Presence Start/Stop deadlock | Fix deadlock that hangs `TestConcurrentUpdateAndRead` (dev CI red) | `go test ./internal/state/... -race` green, no hangs |
 | - [x] 8.5 | Explicit test/job timeouts | Add `timeout-minutes` to CI jobs and `-timeout` to `go test` invocations | No job can hang for the default runner timeout again |
@@ -203,7 +203,7 @@ Close the remaining security gaps and cut the first public release.
 | [ ] 9.3 | Fail fast on missing `discord.client_id` | Refuse to start with a clear error when `discord.client_id` is empty | Misconfigured runs abort at startup instead of silently flapping |
 | [ ] 9.4 | Cut first release | Merge `dev` → `main`, tag `v0.1.0`, publish release binaries | v0.1.0 published with binaries for all platforms |
 | [ ] 9.5 | Branch protection + required review | Protect `main`/`dev`: require PR + green CI + at least 1 review | Direct pushes blocked; CI required to merge |
-| [ ] 9.6 | Remove legacy `PROXY_TOKEN` env var | Drop the `PROXY_TOKEN` override in `internal/config/config.go` (`setupEnv`); bind `auth.token` to `PROXY_AUTH_TOKEN` only; update `TestProxyTokenEnvVar` in `config_test.go` and all docs mentioning the legacy var (SPEC §Auth, README, `configs/config.example.yaml`). Currently `PROXY_TOKEN` wins over `PROXY_AUTH_TOKEN` when both are set — a migration footgun | `PROXY_TOKEN` is ignored; `PROXY_AUTH_TOKEN` is the sole env source; released as a breaking change (`feat!:` + `BREAKING CHANGE` footer) |
+| [x] 9.6 | Remove legacy `PROXY_TOKEN` env var | Drop the `PROXY_TOKEN` override in `internal/config/config.go` (`setupEnv`); bind `auth.token` to `PROXY_AUTH_TOKEN` only; update `TestProxyTokenEnvVar` in `config_test.go` and all docs mentioning the legacy var (SPEC §Auth, README, `configs/config.example.yaml`). Previously `PROXY_TOKEN` won over `PROXY_AUTH_TOKEN` when both were set — a migration footgun | `PROXY_TOKEN` is ignored; `PROXY_AUTH_TOKEN` is the sole env source; released as a breaking change (`feat!:` + `BREAKING CHANGE` footer) |
 
 ---
 

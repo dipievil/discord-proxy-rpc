@@ -209,7 +209,7 @@ HTTP-level errors (auth failure, oversized body, rate limit, connection cap, rec
 - Disabled by default
 - If enabled: static token required on the WS upgrade (see the authentication handshake above)
 - Primary token source: `auth.token` in config, overridable via the `PROXY_AUTH_TOKEN` env var
-- Legacy `PROXY_TOKEN` env var is still accepted; **when set it takes precedence over both `auth.token` and `PROXY_AUTH_TOKEN`** (explicit viper `Set` beats the env binding) — it is not a true fallback. Scheduled for removal (task 9.6); use `PROXY_AUTH_TOKEN` only
+- The legacy `PROXY_TOKEN` env var was removed in task 9.6; it no longer sets `auth.token` — use `PROXY_AUTH_TOKEN` only
 - Token comparison is constant-time (`crypto/subtle`)
 - Browser clients (the dashboard) cannot set request headers; they send the token as a WebSocket subprotocol `proxy-token-<base64url(token)>` instead
 - **Known gap (deliberate in v1)**: REST/dashboard endpoints (`/`, `/api/*`, `/health*`) are NOT auth-gated in the current implementation — only the WS upgrade is. Tracked as future task 9.1.
@@ -250,7 +250,7 @@ server:
 
 auth:
   enabled: false
-  token: ""                  # override via PROXY_AUTH_TOKEN env (legacy PROXY_TOKEN wins if both set; removal planned — task 9.6)
+  token: ""                  # override via PROXY_AUTH_TOKEN env (legacy PROXY_TOKEN removed — task 9.6)
 
 mdns:
   enabled: true
@@ -441,7 +441,7 @@ ENTRYPOINT ["discord-proxy"]
 
 - **Read-only**: No `SET_ACTIVITY` command exposed
 - **LAN only**: Binds to `0.0.0.0` by default; restrict via firewall or `host: "127.0.0.1"` + VPN (Tailscale)
-- **Optional token auth**: Enable `auth.enabled: true` + set `PROXY_AUTH_TOKEN` for shared-secret auth on the WS upgrade; comparison is constant-time. The legacy `PROXY_TOKEN` env var currently wins when both are set (removal tracked as task 9.6). REST/dashboard endpoints are NOT auth-gated yet (tracked as task 9.1)
+- **Optional token auth**: Enable `auth.enabled: true` + set `PROXY_AUTH_TOKEN` for shared-secret auth on the WS upgrade; comparison is constant-time. The legacy `PROXY_TOKEN` env var was removed in task 9.6 — `PROXY_AUTH_TOKEN` is the sole env source. REST/dashboard endpoints are NOT auth-gated yet (tracked as task 9.1)
 - **WS rate limiting**: Per-IP limiter on WS upgrades (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 10 upgrades per minute per IP); excess upgrades get HTTP 429 `REQ_002`
 - **Max WS connections**: Concurrent client cap (`server.max_ws_connections`, default 100); excess upgrades get HTTP 503 `REQ_003`
 - **Request body cap**: Requests declaring `Content-Length` over 1 MiB are rejected with HTTP 413 `REQ_001`; unknown-length (chunked) bodies are capped via `MaxBytesReader`, so any read past 1 MiB fails. The current handlers never read request bodies (all routes are read-only), so an oversized chunked body is ignored rather than rejected with 413
