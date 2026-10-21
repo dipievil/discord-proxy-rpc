@@ -146,8 +146,8 @@ if [[ "$READY" -eq 1 ]]; then
     fi
 
     PRES=$(curl -sf "$BASE/api/presence" || true)
-    if echo "$PRES" | grep -q '"type"'; then
-        pass "/api/presence returns valid JSON"
+    if echo "$PRES" | grep -q '"source"' && echo "$PRES" | grep -q '"activity"'; then
+        pass "/api/presence returns a presence snapshot (source/activity)"
     else
         fail "/api/presence unexpected response: ${PRES:-<no response>}"
     fi

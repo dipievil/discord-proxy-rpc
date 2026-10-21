@@ -25,7 +25,7 @@ type Server struct {
 	wsHandler          *WSHandler
 	auth               func(*http.Request) bool
 	wsPath             string
-	getCurrentPresence func() types.Activity
+	getCurrentPresence func() types.PresenceSnapshot
 	getIPCState        func() string
 	rateLimiter        *RateLimiter
 	connTracker        *ConnectionTracker
@@ -33,7 +33,7 @@ type Server struct {
 
 type ServerOption func(*Server)
 
-func WithGetCurrentPresence(fn func() types.Activity) ServerOption {
+func WithGetCurrentPresence(fn func() types.PresenceSnapshot) ServerOption {
 	return func(s *Server) {
 		s.getCurrentPresence = fn
 	}
@@ -78,7 +78,7 @@ func NewServer(hub *Hub, logger *zap.Logger, opts ...ServerOption) *Server {
 		hub:                hub,
 		logger:             logger,
 		wsPath:             "/ws",
-		getCurrentPresence: func() types.Activity { return types.Activity{} },
+		getCurrentPresence: func() types.PresenceSnapshot { return types.PresenceSnapshot{Source: types.SourceNone} },
 		getIPCState:        func() string { return string(StateDisconnected) },
 	}
 
@@ -226,9 +226,9 @@ func (s *Server) serveDashboardIndex(w http.ResponseWriter) {
 }
 
 func (s *Server) handlePresence(w http.ResponseWriter, r *http.Request) {
-	activity := s.getCurrentPresence()
+	snapshot := s.getCurrentPresence()
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(activity); err != nil {
+	if err := json.NewEncoder(w).Encode(snapshot); err != nil {
 		s.logger.Error("failed to encode presence response", zap.Error(err))
 	}
 }

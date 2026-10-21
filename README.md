@@ -9,6 +9,7 @@ A lightweight, read-only LAN proxy that connects to Discord's local IPC socket a
 ## Table of Contents
 
 - [Overview](#overview)
+- [Activity source](#activity-source)
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
 - [Discord App Setup](#discord-app-setup)
@@ -25,11 +26,14 @@ A lightweight, read-only LAN proxy that connects to Discord's local IPC socket a
 
 ## Overview
 
-discord-proxy-rpc is a single-binary Go application that runs on the same machine as your Discord desktop client. It connects to Discord via IPC (Inter-Process Communication), reads the current Rich Presence activity, and broadcasts it to any connected clients on your local network.
+discord-proxy-rpc is a single-binary Go application that runs on the same machine as your Discord desktop client. It connects to Discord via IPC (Inter-Process Communication) and re-broadcasts Rich Presence activity to any connected clients on your local network.
+
+> **Activity source:** Discord's local IPC socket lets a client *set* its own Rich Presence but exposes **no way to read another application's presence**, and Discord does not push `ACTIVITY` frames to a client like this proxy. The proxy therefore has **no activity source today** and reports that explicitly (`source: "none"`) instead of showing a misleading empty feed. See [Activity source](#activity-source).
 
 **Key characteristics:**
 
 - **Read-only** -- cannot modify Discord activity; only observes and broadcasts.
+- **Explicit, honest state** -- presence carries a `source` field, so clients can tell "no source wired up" from "a source reported nothing".
 - **Single binary** -- no runtime dependencies, no database, no external files.
 - **Zero-config discovery** -- mDNS (Bonjour/Avahi) announces the service automatically on LAN.
 - **Embedded dashboard** -- a responsive web UI is built into the binary via `go:embed`.
@@ -41,6 +45,38 @@ discord-proxy-rpc is a single-binary Go application that runs on the same machin
 - Discord **desktop client** running and logged in (web Discord does not expose IPC).
 - The proxy must run under the same OS user session as Discord.
 - Linux: `XDG_RUNTIME_DIR` must be set (typical in graphical sessions).
+
+---
+
+## Activity source
+
+The proxy is meant to read the Discord desktop client's Rich Presence and re-broadcast it, but the IPC socket cannot deliver that data:
+
+- `discord-ipc-*` carries RPC requests from a client to local Discord. The only activity-related command is `SET_ACTIVITY` (a client publishing *its own* presence). There is no `GET_ACTIVITY`, and Discord does not dispatch another application's `ACTIVITY` as an unsolicited frame.
+- The proxy's IPC layer still handshakes, keeps the connection alive, and can parse an `ACTIVITY` frame if one ever arrives, so it is ready the moment a real source exists. Until then every snapshot is reported with `source: "none"`.
+
+Presence is therefore wrapped in a small snapshot envelope:
+
+```json
+{ "source": "none", "activity": null }
+```
+
+| `source` | Meaning |
+|----------|---------|
+| `"none"` | No activity source. `activity` is always `null`. Expected today. |
+| `"ipc"`  | The activity came from a Discord IPC `ACTIVITY` frame; `activity` is non-null. |
+
+This envelope is what `/api/presence` and the WebSocket `presence` / `current` messages carry. The dashboard reads `source` and shows a "No activity source" notice instead of an empty activity card.
+
+### Proving it on your host (capture harness)
+
+`cmd/ipc-capture` records every raw frame Discord's IPC socket sends for a bounded window and reports whether any were `ACTIVITY` frames. Run it on the machine with the Discord desktop client while a game is open:
+
+```bash
+go run ./cmd/ipc-capture -client-id <your-discord-app-id> -duration 60s -out capture.jsonl
+```
+
+The summary ends with `No ACTIVITY frame was observed…` (confirming the limitation) or `Found N ACTIVITY frame(s)…`. If a source does exist on your setup, share `capture.jsonl` so the `ACTIVITY` frame can be wired in.
 
 ---
 
@@ -260,6 +296,7 @@ The dashboard is an embedded web SPA served at the root path (`/`). It provides:
 
 - Real-time presence display via WebSocket
 - Connection status indicator (green = connected, red = disconnected, yellow = reconnecting)
+- Activity source notice ("No activity source" when the proxy has none, instead of an empty activity card)
 - Activity details: type, state, timestamps (live countdown), assets, party, buttons
 - "Copy JSON" button for debugging
 - Responsive design (mobile-friendly)
@@ -286,7 +323,7 @@ When `auth.enabled` is true, the dashboard cannot send an `Authorization` header
 | Route | Method | Description | Response (200) | Response (503) |
 |-------|--------|-------------|----------------|----------------|
 | `/` | GET | Dashboard SPA | `text/html` | — |
-| `/api/presence` | GET | Current presence as JSON snapshot | `Activity` object | — |
+| `/api/presence` | GET | Current presence snapshot | `{"source":"none\|ipc","activity":Activity\|null}` | — |
 | `/api/state` | GET | IPC connection state as JSON | `{"status":"connected\|disconnected\|reconnecting"}` | — |
 | `/health` | GET | **Rich liveness probe** — includes IPC state | `{"status":"ok","ipc":"<state>"}` | — |
 | `/healthz` | GET | **Minimal liveness probe** (k8s-compatible) | `{"status":"ok"}` | — |
@@ -358,25 +395,33 @@ Request current state:
 
 **Server -> Client messages:**
 
-Presence update (pushed on change):
+Presence update (pushed on change). `payload` is a presence snapshot — `activity` is `null` while there is no activity source (see [Activity source](#activity-source)):
 ```json
 {
   "type": "presence",
   "payload": {
-    "details": "In a match",
-    "state": "Winning 3-1",
-    "timestamps": { "start": 1234567890 },
-    "assets": {
-      "large_image": "game_logo",
-      "large_text": "Game Name",
-      "small_image": "rank_icon",
-      "small_text": "Diamond II"
-    },
-    "party": { "id": "party123", "size": [3, 5] },
-    "buttons": [{ "label": "Join Game", "url": "https://example.com" }],
-    "type": 0
+    "source": "ipc",
+    "activity": {
+      "details": "In a match",
+      "state": "Winning 3-1",
+      "timestamps": { "start": 1234567890 },
+      "assets": {
+        "large_image": "game_logo",
+        "large_text": "Game Name",
+        "small_image": "rank_icon",
+        "small_text": "Diamond II"
+      },
+      "party": { "id": "party123", "size": [3, 5] },
+      "buttons": [{ "label": "Join Game", "url": "https://example.com" }],
+      "type": 0
+    }
   }
 }
+```
+
+With no activity source yet, the same message is:
+```json
+{ "type": "presence", "payload": { "source": "none", "activity": null } }
 ```
 
 Connection state change:
@@ -388,11 +433,12 @@ Connection state change:
 }
 ```
 
-Current state response:
+Current state response (`payload` is the same presence snapshot shape):
 ```json
 {
   "type": "current",
-  "payload": { ... }
+  "payload": { "source": "none", "activity": null },
+  "client_id": "123456789012345678"
 }
 ```
 
@@ -431,6 +477,7 @@ Current state response:
 | `make release` | Build and publish via GoReleaser |
 | `make clean` | Remove build artifacts |
 | `make e2e` | Run end-to-end tests (requires GCC for race detector) |
+| `make capture` | Record raw Discord IPC frames (`CLIENT_ID=... [DURATION=60s] [OUT=capture.jsonl]`) |
 
 ### Release process
 
@@ -478,13 +525,24 @@ Multi-stage build: `golang:1.26-alpine` compiles a static binary, `alpine:3.20` 
 - On Windows, ensure Bonjour Print Services is installed.
 - Try direct IP access as a fallback: `http://<host-ip>:8765`.
 
-### 4. Presence not updating
+### 4. Dashboard shows "No activity source"
 
-- The proxy coalesces updates in a 5-second window by default. Wait at least 5s.
+This is expected today. Discord's local IPC socket does not expose another application's Rich Presence, so the proxy has no source to read and reports `source: "none"`.
+
+- Confirm with the capture harness on the host running Discord while a game is open:
+  ```bash
+  go run ./cmd/ipc-capture -client-id <your-discord-app-id> -duration 60s -out capture.jsonl
+  ```
+  `No ACTIVITY frame was observed…` confirms there is no IPC source on your setup.
+- Verify the snapshot directly: `curl http://localhost:8765/api/presence` returns `{"source":"none","activity":null}`.
+- If the harness *does* report `ACTIVITY` frames, please share `capture.jsonl` in an issue so the source can be wired in.
+
+### 5. Presence not updating after a source exists
+
+- If a snapshot reports `source: "ipc"`, the proxy coalesces updates in a 5-second window by default — wait at least 5s.
 - Check logs for IPC disconnections (`logging.level: "debug"` for verbose output).
-- Ensure the Discord activity is set via the Rich Presence API (not just a game detected by Discord).
 
-### 5. Auth token rejected
+### 6. Auth token rejected
 
 - Verify `auth.enabled: true` and `auth.token` / `PROXY_TOKEN` match on both server and client.
 - For REST and dashboard requests, send the token as `Authorization: Bearer <token>`, as `?token=<token>`, or open the dashboard with `?token=<token>` in the URL.

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dragsbruh/gopresence"
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/pkg/types"
+	"github.com/dragsbruh/gopresence"
 )
 
 func TestParseActivityAllFields(t *testing.T) {

@@ -4,6 +4,8 @@
 
 A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and exposes Rich Presence data over the local network via WebSocket + HTTP. Read-only — other devices can observe presence but not modify it.
 
+> **Activity source (important):** Discord's local IPC socket is a client→Discord channel. It allows a client to *set* its own activity (`SET_ACTIVITY`) but exposes **no command to read another application's Rich Presence**. Discord does not push `ACTIVITY` frames to a connected client such as this proxy. As a result the proxy currently has **no activity source** and cannot observe what the desktop client is doing; it says so explicitly instead of showing an empty feed. See [Activity source](#activity-source) for the contract and how to prove the limitation on your own setup.
+
 **Target platforms**: Linux, Windows (macOS supported via cross-compile)
 **Deployment**: Single static binary (Go), systemd/service or manual run
 **Discovery**: mDNS (zeroconf) for auto-discovery on LAN
@@ -44,6 +46,39 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
 
 ---
 
+## Activity source
+
+The proxy's job is to read the Discord desktop client's Rich Presence and re-broadcast it, but the IPC socket cannot deliver that data:
+
+- `discord-ipc-*` carries RPC requests from a client to the local Discord client. The only activity-related command is `SET_ACTIVITY` (a client publishing *its own* presence). There is no `GET_ACTIVITY`, and Discord does not dispatch another application's `ACTIVITY` as an unsolicited frame.
+- The proxy's IPC layer (`internal/ipc/`) still handshakes, keeps the connection alive, and parses any `ACTIVITY` frame it might receive, so it is ready the moment a real source exists. Until then **every snapshot is reported with `source: "none"`**.
+
+To make that state explicit — rather than a silent empty feed that looks like "no one is playing" — the presence contract carries a `source` alongside the (nullable) `activity`:
+
+```json
+{ "source": "none", "activity": null }
+```
+
+| `source` | Meaning |
+|----------|---------|
+| `"none"` | The proxy has no activity source. `activity` is always `null`. This is the expected value today. |
+| `"ipc"`  | The snapshot was produced from a Discord IPC `ACTIVITY` frame. `activity` is the parsed activity (non-null). |
+
+Both `/api/presence` and the WebSocket `presence` / `current` messages carry this snapshot envelope. The dashboard reads `source` and shows an explicit "No activity source" notice instead of an empty activity card.
+
+### Proving the limitation (capture harness)
+
+`cmd/ipc-capture` connects to the local Discord IPC socket, performs the handshake, and records every raw frame Discord sends for a bounded window, then reports whether any of them was an `ACTIVITY` frame:
+
+```bash
+# Run on the machine running the Discord desktop client, while a game is open:
+go run ./cmd/ipc-capture -client-id <discord-app-id> -duration 60s -out capture.jsonl
+```
+
+The summary ends with either `No ACTIVITY frame was observed…` (confirming there is no IPC source) or `Found N ACTIVITY frame(s)…`. Share `capture.jsonl` if a source turns out to exist, so the `ACTIVITY` frame can be wired into the proxy.
+
+---
+
 ## Components
 
 ### 1. IPC Client (`internal/ipc/`)
@@ -54,13 +89,13 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
   - Handshake (v=1, client_id from config)
   - Handle `READY` event → transition to `connected` state
   - Handle disconnect → trigger reconnection logic
-  - Parse `ACTIVITY` payloads → normalized internal struct
+  - Parse `ACTIVITY` frames → normalized internal struct **when any arrive**; Discord does not push another application's activity today, so this path is currently dormant (see [Activity source](#activity-source))
 - **Reconnection**: Exponential backoff: 5s, 10s, 20s, 40s, 60s (max), jitter ±10%
 - **Health**: Periodic PING (Discord IPC opcode 3) every 30s
 
 ### 2. Presence State Machine (`internal/state/`)
 
-- **Cache**: Single `Presence` struct (last known activity)
+- **Cache**: Single `Presence` struct (last known activity + whether a source has ever supplied one)
 - **Diff**: Deep compare new vs cached; only emit `PresenceUpdate` event on change
 - **Coalesce**: Buffer incoming IPC updates for 5s; emit latest at window end
 - **Thread-safety**: All access via mutex; callbacks executed async (non-blocking)
@@ -73,7 +108,7 @@ A LAN proxy that connects to Discord's local IPC socket (`discord-ipc-*`) and ex
 |-------|--------|-------------|----------------|----------------|
 | `/` | GET | Dashboard SPA (embedded static files) | `text/html` | — |
 | `/ws` | GET | WebSocket upgrade → API | `101 Switching Protocols` | — |
-| `/api/presence` | GET | Current presence JSON (snapshot) | `Activity` object | — |
+| `/api/presence` | GET | Current presence snapshot (`{"source":"none\|ipc","activity":Activity\|null}`) | `PresenceSnapshot` object | — |
 | `/api/state` | GET | IPC connection state JSON | `{"status":"connected\|disconnected\|reconnecting"}` | — |
 | `/health` | GET | **Rich liveness probe** — includes IPC state | `{"status":"ok","ipc":"<state>"}` | — |
 | `/healthz` | GET | **Minimal liveness probe** (k8s-compatible) | `{"status":"ok"}` | — |
@@ -101,12 +136,12 @@ The server echoes the offered `proxy-token-*` subprotocol back on success so the
 **Server → Client (push)**
 
 ```json
-{ "type": "presence", "payload": { /* Activity object */ } }
+{ "type": "presence", "payload": { "source": "none", "activity": null } }
 { "type": "state", "status": "connected|disconnected|reconnecting", "client_id": "optional Discord App ID" }
-{ "type": "current", "payload": { /* Activity object */ }, "client_id": "optional Discord App ID" }
+{ "type": "current", "payload": { "source": "none", "activity": null }, "client_id": "optional Discord App ID" }
 ```
 
-`client_id` (the Discord Application ID from `discord.client_id`) is included on `state` and `current` messages when configured, so clients can identify which Discord account the proxy is attached to.
+`payload` on `presence` and `current` is a **presence snapshot** (see [Activity source](#activity-source)); `activity` is `null` whenever `source` is `"none"`. `client_id` (the Discord Application ID from `discord.client_id`) is included on `state` and `current` messages when configured, so clients can identify which Discord account the proxy is attached to.
 
 **Client → Server**
 
@@ -133,6 +168,17 @@ Error frames are sent in direct response to a client message that could not be p
 | `REQ_003` | `ErrCodeTooManyConns` | Max concurrent WS connections reached (HTTP 503) |
 
 HTTP-level errors (auth failure, oversized body, rate limit, connection cap, recovered panic) use the same codes in a top-level JSON envelope: `{ "code": "<CODE>", "error": "<message>" }`. WS `error` frames instead nest them under `payload` as `{ "code", "message" }`.
+
+**Presence Snapshot** (payload of `presence` / `current` and body of `/api/presence`)
+
+```json
+{
+  "source": "none",
+  "activity": null
+}
+```
+
+`source` is `"none"` or `"ipc"`; `activity` carries the Activity Object below when `source` is `"ipc"`, and is `null` otherwise. `activity` is always present on the wire (it is not omitted).
 
 **Activity Object** (subset of Discord RPC spec)
 
@@ -224,6 +270,7 @@ logging:
 - **Tech**: Vanilla HTML/CSS/JS (no build step, no framework)
 - **Features**:
   - Connection status indicator (● green/red)
+  - **Activity source notice** — shows "No activity source" when the snapshot reports `source: "none"`, instead of an empty activity card
   - Presence fields: Details, State, Timestamps (live countdown), Assets (images), Party, Buttons
   - Real-time updates via WebSocket
   - "Copy JSON" button for debugging
@@ -244,8 +291,10 @@ logging:
 ```
 discord-proxy-rpc/
 ├── cmd/
-│   └── proxy/
-│       └── main.go           # Entry point, wiring, signal handling
+│   ├── proxy/
+│   │   └── main.go           # Entry point, wiring, signal handling
+│   └── ipc-capture/
+│       └── main.go           # Capture harness: records raw Discord IPC frames
 ├── internal/
 │   ├── config/
 │   │   └── config.go
@@ -333,7 +382,7 @@ make build-all
 ### CI (GitHub Actions — `.github/workflows/ci.yml`)
 
 - Triggers: push and PR to `dev` and `main`
-- Jobs: `lint` (go vet), `test` (`make test`, unit + integration with `-race`), `build` (`make build`), `e2e` (`scripts/e2e.sh`, incl. verification that the script fails on a broken start)
+- Jobs: `lint` (`gofmt` check, `go vet`, `golangci-lint run`), `test` (`make test`, unit + integration with `-race`), `build` (`make build`), `e2e` (`scripts/e2e.sh`, incl. verification that the script fails on a broken start)
 - A PR may merge only with green CI
 
 ### Release (GitHub Actions + GoReleaser)

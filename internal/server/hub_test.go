@@ -101,7 +101,7 @@ func TestHubBroadcast(t *testing.T) {
 	}
 
 	activity := types.Activity{Details: "Playing", State: "In match", Type: types.ActivityPlaying}
-	msg, err := NewPresenceMessage(activity)
+	msg, err := NewPresenceMessage(testSnapshot(activity))
 	if err != nil {
 		t.Fatalf("NewPresenceMessage: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestHubBroadcastFiltered(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	activity := types.Activity{Details: "Test", Type: types.ActivityPlaying}
-	presenceMsg, _ := NewPresenceMessage(activity)
+	presenceMsg, _ := NewPresenceMessage(testSnapshot(activity))
 	hub.Broadcast(presenceMsg)
 
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -285,7 +285,7 @@ func TestHubConcurrent(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		activity := types.Activity{Details: "test", Type: types.ActivityPlaying}
-		msg, _ := NewPresenceMessage(activity)
+		msg, _ := NewPresenceMessage(testSnapshot(activity))
 		hub.Broadcast(msg)
 	}
 	time.Sleep(100 * time.Millisecond)
@@ -316,8 +316,8 @@ func TestHubGetCurrentPresence(t *testing.T) {
 	defer cancel()
 
 	activity := types.Activity{Details: "Current Game", Type: types.ActivityPlaying}
-	hub.GetCurrentPresence = func() types.Activity {
-		return activity
+	hub.GetCurrentPresence = func() types.PresenceSnapshot {
+		return testSnapshot(activity)
 	}
 
 	var serverConn *websocket.Conn
@@ -384,10 +384,7 @@ func TestHubGetCurrentPresence(t *testing.T) {
 		t.Errorf("type = %q, want %q", resp.Type, MsgTypeCurrent)
 	}
 
-	var got types.Activity
-	if err := json.Unmarshal(resp.Payload, &got); err != nil {
-		t.Fatalf("Unmarshal payload: %v", err)
-	}
+	got := testDecodeActivity(t, resp.Payload, "current")
 	if got.Details != "Current Game" {
 		t.Errorf("Details = %q, want %q", got.Details, "Current Game")
 	}
@@ -406,7 +403,7 @@ func TestHubMultipleEventTypes(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	activity := types.Activity{Details: "Game", Type: types.ActivityPlaying}
-	presenceMsg, _ := NewPresenceMessage(activity)
+	presenceMsg, _ := NewPresenceMessage(testSnapshot(activity))
 	hub.Broadcast(presenceMsg)
 
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -488,7 +485,7 @@ func TestClientReadPumpSubscribe(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	activity := types.Activity{Details: "Game", Type: types.ActivityPlaying}
-	presenceMsg, _ := NewPresenceMessage(activity)
+	presenceMsg, _ := NewPresenceMessage(testSnapshot(activity))
 	hub.Broadcast(presenceMsg)
 
 	var received []byte

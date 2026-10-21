@@ -109,8 +109,8 @@ func (m *ClientMessage) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func NewPresenceMessage(activity types.Activity) (ServerMessage, error) {
-	payload, err := json.Marshal(activity)
+func NewPresenceMessage(snapshot types.PresenceSnapshot) (ServerMessage, error) {
+	payload, err := json.Marshal(snapshot)
 	if err != nil {
 		return ServerMessage{}, fmt.Errorf("marshalling presence payload: %w", err)
 	}
@@ -125,8 +125,8 @@ func NewStateMessage(status ConnectionState, clientID ...string) ServerMessage {
 	return msg
 }
 
-func NewCurrentMessage(activity types.Activity, clientID ...string) (ServerMessage, error) {
-	payload, err := json.Marshal(activity)
+func NewCurrentMessage(snapshot types.PresenceSnapshot, clientID ...string) (ServerMessage, error) {
+	payload, err := json.Marshal(snapshot)
 	if err != nil {
 		return ServerMessage{}, fmt.Errorf("marshalling current payload: %w", err)
 	}

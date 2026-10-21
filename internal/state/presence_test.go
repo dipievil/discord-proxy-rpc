@@ -68,6 +68,55 @@ func TestUpdateAndCurrent(t *testing.T) {
 	}
 }
 
+func TestSnapshotWithoutSource(t *testing.T) {
+	p := newTestPresence(t)
+
+	snapshot := p.Snapshot()
+	if snapshot.Source != types.SourceNone {
+		t.Errorf("Source = %q, want %q", snapshot.Source, types.SourceNone)
+	}
+	if snapshot.Activity != nil {
+		t.Errorf("Activity = %+v, want nil", snapshot.Activity)
+	}
+}
+
+func TestSnapshotAfterUpdate(t *testing.T) {
+	p := newTestPresence(t)
+
+	activity := types.Activity{Details: "Playing a game", Type: types.ActivityPlaying}
+	p.Update(activity)
+
+	snapshot := p.Snapshot()
+	if snapshot.Source != types.SourceIPC {
+		t.Errorf("Source = %q, want %q", snapshot.Source, types.SourceIPC)
+	}
+	if snapshot.Activity == nil {
+		t.Fatal("Activity is nil after an update")
+	}
+	if snapshot.Activity.Details != activity.Details {
+		t.Errorf("Details = %q, want %q", snapshot.Activity.Details, activity.Details)
+	}
+
+	snapshot.Activity.Details = "mutated"
+	if again := p.Snapshot(); again.Activity.Details != activity.Details {
+		t.Errorf("Snapshot shares its activity: Details = %q, want %q", again.Activity.Details, activity.Details)
+	}
+}
+
+func TestSnapshotWithoutSourceAfterRestart(t *testing.T) {
+	p := newTestPresence(t)
+	p.Update(types.Activity{Details: "Playing a game", Type: types.ActivityPlaying})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+	defer p.Stop()
+
+	if snapshot := p.Snapshot(); snapshot.Source != types.SourceNone || snapshot.Activity != nil {
+		t.Errorf("Snapshot after restart = %+v, want no source", snapshot)
+	}
+}
+
 func TestSubscribeReceivesUpdate(t *testing.T) {
 	p := newTestPresence(t)
 	ctx, cancel := context.WithCancel(context.Background())

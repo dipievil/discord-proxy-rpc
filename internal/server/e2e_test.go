@@ -44,10 +44,10 @@ func TestE2EPresenceUpdateLifecycle(t *testing.T) {
 	current := initialActivity
 
 	hub, _, ts := newTestServer(t,
-		WithGetCurrentPresence(func() types.Activity {
+		WithGetCurrentPresence(func() types.PresenceSnapshot {
 			mu.Lock()
 			defer mu.Unlock()
-			return current
+			return testSnapshot(current)
 		}),
 	)
 
@@ -57,7 +57,7 @@ func TestE2EPresenceUpdateLifecycle(t *testing.T) {
 
 	testSubscribe(t, conn, []string{MsgTypePresence})
 
-	presenceMsg, _ := NewPresenceMessage(initialActivity)
+	presenceMsg, _ := NewPresenceMessage(testSnapshot(initialActivity))
 	hub.Broadcast(presenceMsg)
 
 	msg := testRead(t, conn)
@@ -72,7 +72,7 @@ func TestE2EPresenceUpdateLifecycle(t *testing.T) {
 	current = updatedActivity
 	mu.Unlock()
 
-	presenceMsg2, _ := NewPresenceMessage(updatedActivity)
+	presenceMsg2, _ := NewPresenceMessage(testSnapshot(updatedActivity))
 	hub.Broadcast(presenceMsg2)
 
 	msg2 := testRead(t, conn)

@@ -191,7 +191,7 @@ func TestPresenceEndpoint(t *testing.T) {
 	}
 
 	srv := NewServer(hub, zap.NewNop(),
-		WithGetCurrentPresence(func() types.Activity { return activity }),
+		WithGetCurrentPresence(func() types.PresenceSnapshot { return testSnapshot(activity) }),
 	)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
@@ -211,10 +211,11 @@ func TestPresenceEndpoint(t *testing.T) {
 		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
 	}
 
-	var got types.Activity
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
+	snapshot := testDecodeSnapshotBody(t, resp.Body, "presence")
+	if snapshot.Source != types.SourceIPC {
+		t.Errorf("Source = %q, want %q", snapshot.Source, types.SourceIPC)
 	}
+	got := testActivityFromSnapshot(t, snapshot, "presence")
 	if got.Details != "Test Game" {
 		t.Errorf("Details = %q, want %q", got.Details, "Test Game")
 	}
@@ -233,12 +234,12 @@ func TestPresenceEndpointDefault(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var got types.Activity
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
+	snapshot := testDecodeSnapshotBody(t, resp.Body, "presence")
+	if snapshot.Source != types.SourceNone {
+		t.Errorf("Source = %q, want %q", snapshot.Source, types.SourceNone)
 	}
-	if !got.IsEmpty() {
-		t.Errorf("expected empty activity by default, got %+v", got)
+	if snapshot.Activity != nil {
+		t.Errorf("Activity = %+v, want nil when there is no source", snapshot.Activity)
 	}
 }
 
@@ -431,7 +432,7 @@ func TestWSGetCurrentViaServer(t *testing.T) {
 	activity := types.Activity{Details: "Server Wired Game", Type: types.ActivityPlaying}
 	hub.ClientID = "app-123"
 	srv := NewServer(hub, zap.NewNop(),
-		WithGetCurrentPresence(func() types.Activity { return activity }),
+		WithGetCurrentPresence(func() types.PresenceSnapshot { return testSnapshot(activity) }),
 	)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
@@ -469,10 +470,7 @@ func TestWSGetCurrentViaServer(t *testing.T) {
 		t.Errorf("client_id = %q, want %q", resp.ClientID, "app-123")
 	}
 
-	var got types.Activity
-	if err := json.Unmarshal(resp.Payload, &got); err != nil {
-		t.Fatalf("Unmarshal payload: %v", err)
-	}
+	got := testDecodeActivity(t, resp.Payload, "current")
 	if got.Details != "Server Wired Game" {
 		t.Errorf("Details = %q, want %q", got.Details, "Server Wired Game")
 	}
@@ -616,12 +614,12 @@ func TestServerRecoveryMiddlewareIntegration(t *testing.T) {
 	// adding a handler that panics through a custom ServerOption.
 	panicked := false
 	testSrv := NewServer(hub, zap.NewNop(),
-		WithGetCurrentPresence(func() types.Activity {
+		WithGetCurrentPresence(func() types.PresenceSnapshot {
 			if !panicked {
 				panicked = true
 				panic("test panic in presence handler")
 			}
-			return types.Activity{}
+			return types.PresenceSnapshot{Source: types.SourceNone}
 		}),
 	)
 
