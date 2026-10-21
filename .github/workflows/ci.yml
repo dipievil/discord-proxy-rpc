@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     name: Lint
@@ -44,8 +48,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
-      - name: Install gcc (for race detector)
-        run: sudo apt-get update && sudo apt-get install -y gcc
       - name: Run tests
         run: make test
 
@@ -77,8 +79,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
-      - name: Install gcc (for race detector)
-        run: sudo apt-get update && sudo apt-get install -y gcc
       - name: Run E2E tests
         env:
           E2E_PORT: 18765
