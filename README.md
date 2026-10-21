@@ -451,6 +451,32 @@ Current state response (`payload` is the same presence snapshot shape):
 | 4 | Custom |
 | 5 | Competing |
 
+### Example Consumer
+
+`examples/consumer/` contains a minimal, copy-pasteable CLI client that shows how to consume the WebSocket API from any LAN machine:
+
+```bash
+go run ./examples/consumer -addr ws://127.0.0.1:8765/ws -token <your-token>
+# or, with the token in the environment:
+PROXY_AUTH_TOKEN=<your-token> go run ./examples/consumer
+```
+
+It authenticates with a Bearer header, subscribes to `presence`/`state`/`current`, requests the current snapshot on connect, prints every update as it arrives, reconnects with exponential backoff if the proxy restarts, and exits cleanly on `Ctrl-C`:
+
+```
+connected to ws://127.0.0.1:8765/ws
+current: no activity source (none)
+state: discord connected (client 123456789012345678)
+```
+
+Each line is the human-readable rendering of one server message, including the snapshot's `source` field (see [Activity source](#activity-source)). With a real activity source wired up, updates render as:
+
+```
+presence: In a match | Winning 3-1 [Playing] party 3/5 (source: ipc)
+```
+
+The `-token` flag is only needed when the proxy runs with `auth.enabled: true`; the example intentionally duplicates the small wire-protocol structs instead of importing this module's internals so it can be pasted into any Go project as-is.
+
 ---
 
 ## Building from Source
