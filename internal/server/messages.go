@@ -29,7 +29,7 @@ type ServerMessage struct {
 	Type     string          `json:"type"`
 	Payload  json.RawMessage `json:"payload,omitempty"`
 	Status   ConnectionState `json:"status,omitempty"`
-	ClientID string          `json:"client_id,omitempty"`
+	ClientID string          `json:"client_id"`
 }
 
 func (m *ServerMessage) UnmarshalJSON(data []byte) error {

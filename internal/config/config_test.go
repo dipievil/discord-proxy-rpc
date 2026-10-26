@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -219,6 +220,92 @@ func TestProxyTokenOverridesProxyAuthToken(t *testing.T) {
 
 	if cfg.Auth.Token != "primary-token" {
 		t.Errorf("auth.token = %q, want %q", cfg.Auth.Token, "primary-token")
+	}
+}
+
+func TestValidateMissingClientID(t *testing.T) {
+	cfg := &Config{}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for missing discord.client_id")
+	}
+	if !strings.Contains(err.Error(), "discord.client_id") {
+		t.Errorf("error %q does not name the field discord.client_id", err)
+	}
+}
+
+func TestValidateBlankClientID(t *testing.T) {
+	cfg := &Config{}
+	cfg.Discord.ClientID = "   \t "
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for whitespace-only discord.client_id")
+	}
+	if !strings.Contains(err.Error(), "discord.client_id") {
+		t.Errorf("error %q does not name the field discord.client_id", err)
+	}
+}
+
+func TestValidateValidConfig(t *testing.T) {
+	cfg := &Config{}
+	cfg.Discord.ClientID = "123456789012345678"
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() with valid client_id: %v", err)
+	}
+	if cfg.Discord.ClientID != "123456789012345678" {
+		t.Errorf("client_id not trimmed/preserved correctly: %q", cfg.Discord.ClientID)
+	}
+}
+
+func TestValidateTrimsClientID(t *testing.T) {
+	cfg := &Config{}
+	cfg.Discord.ClientID = "  123456789012345678  "
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() with padded client_id: %v", err)
+	}
+	if cfg.Discord.ClientID != "123456789012345678" {
+		t.Errorf("client_id not trimmed: got %q", cfg.Discord.ClientID)
+	}
+}
+
+func TestValidateNonNumericClientID(t *testing.T) {
+	cfg := &Config{}
+	cfg.Discord.ClientID = "1234567890abc"
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for non-numeric discord.client_id")
+	}
+	if !strings.Contains(err.Error(), "not a valid Discord Application ID") {
+		t.Errorf("error %q does not mention numeric validation", err)
+	}
+}
+
+func TestLoadConfigRejectsMissingClientID(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PROXY_DISCORD_CLIENT_ID", "")
+
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("LoadConfig() with empty discord.client_id: want error, got nil")
+	} else if !strings.Contains(err.Error(), "discord.client_id") {
+		t.Errorf("error %q does not name discord.client_id", err)
+	}
+}
+
+func TestLoadConfigAcceptsClientIDFromEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PROXY_DISCORD_CLIENT_ID", "123456789012345678")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() with PROXY_DISCORD_CLIENT_ID set: %v", err)
+	}
+	if cfg.Discord.ClientID != "123456789012345678" {
+		t.Errorf("discord.client_id = %q, want %q", cfg.Discord.ClientID, "123456789012345678")
 	}
 }
 
