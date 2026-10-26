@@ -190,8 +190,8 @@ func TestEnvVarOverrides(t *testing.T) {
 	}
 }
 
-func TestProxyTokenEnvVar(t *testing.T) {
-	t.Setenv("PROXY_TOKEN", "proxy-secret-token")
+func TestLegacyProxyTokenIgnored(t *testing.T) {
+	t.Setenv("PROXY_TOKEN", "legacy-token")
 
 	v := newViperWithDefaults(t)
 	setupEnv(v)
@@ -201,14 +201,14 @@ func TestProxyTokenEnvVar(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if cfg.Auth.Token != "proxy-secret-token" {
-		t.Errorf("auth.token = %q, want %q", cfg.Auth.Token, "proxy-secret-token")
+	if cfg.Auth.Token != "" {
+		t.Errorf("auth.token = %q, want %q (legacy PROXY_TOKEN must be ignored)", cfg.Auth.Token, "")
 	}
 }
 
-func TestProxyTokenOverridesProxyAuthToken(t *testing.T) {
-	t.Setenv("PROXY_TOKEN", "primary-token")
-	t.Setenv("PROXY_AUTH_TOKEN", "secondary-token")
+func TestProxyAuthTokenIsSoleEnvSource(t *testing.T) {
+	t.Setenv("PROXY_TOKEN", "legacy-token")
+	t.Setenv("PROXY_AUTH_TOKEN", "auth-token")
 
 	v := newViperWithDefaults(t)
 	setupEnv(v)
@@ -218,8 +218,38 @@ func TestProxyTokenOverridesProxyAuthToken(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if cfg.Auth.Token != "primary-token" {
-		t.Errorf("auth.token = %q, want %q", cfg.Auth.Token, "primary-token")
+	if cfg.Auth.Token != "auth-token" {
+		t.Errorf("auth.token = %q, want %q (PROXY_AUTH_TOKEN must win over legacy PROXY_TOKEN)", cfg.Auth.Token, "auth-token")
+	}
+}
+
+func TestProxyAuthTokenOverridesConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	writeConfigFile(t, dir, `
+auth:
+  enabled: true
+  token: "file-secret"
+`)
+	t.Setenv("PROXY_AUTH_TOKEN", "env-secret")
+
+	v := newViperWithDefaults(t)
+	setupEnv(v)
+	v.AddConfigPath(dir)
+
+	if err := v.ReadInConfig(); err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+
+	var cfg Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if cfg.Auth.Token != "env-secret" {
+		t.Errorf("auth.token = %q, want %q (PROXY_AUTH_TOKEN must win over config file)", cfg.Auth.Token, "env-secret")
+	}
+	if !cfg.Auth.Enabled {
+		t.Error("auth.enabled = false, want true (config file value must be preserved)")
 	}
 }
 
