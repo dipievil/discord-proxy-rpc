@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -118,10 +119,6 @@ func setupEnv(v *viper.Viper) {
 	_ = v.BindEnv("auth.enabled", "PROXY_AUTH_ENABLED")
 	_ = v.BindEnv("auth.token", "PROXY_AUTH_TOKEN")
 
-	if token := os.Getenv("PROXY_TOKEN"); token != "" {
-		v.Set("auth.token", token)
-	}
-
 	_ = v.BindEnv("mdns.enabled", "PROXY_MDNS_ENABLED")
 	_ = v.BindEnv("mdns.instance_name", "PROXY_MDNS_INSTANCE_NAME")
 	_ = v.BindEnv("mdns.service_type", "PROXY_MDNS_SERVICE_TYPE")
@@ -168,7 +165,24 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("unmarshalling config: %w", err)
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	return &cfg, nil
+}
+
+func (c *Config) Validate() error {
+	id := strings.TrimSpace(c.Discord.ClientID)
+	if id == "" {
+		return errors.New("discord.client_id is required but empty: set it in config.yaml under \"discord.client_id\" or via the PROXY_DISCORD_CLIENT_ID environment variable (Discord Developer Portal > General Information > Application ID)")
+	}
+	if strings.ContainsFunc(id, func(r rune) bool { return r < '0' || r > '9' }) {
+		return fmt.Errorf("discord.client_id %q is not a valid Discord Application ID: expected digits only (Discord Developer Portal > General Information > Application ID)", id)
+	}
+	c.Discord.ClientID = id
+
+	return nil
 }
 
 func SetupLogger(level, format string) (*zap.Logger, error) {
