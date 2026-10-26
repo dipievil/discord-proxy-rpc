@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   lint:
@@ -48,6 +48,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
+      - name: Verify race toolchain
+        run: |
+          if ! command -v gcc > /dev/null 2>&1; then
+            echo "::error::gcc not found; 'make test' would silently skip the race detector"
+            exit 1
+          fi
+          gcc --version | head -1
       - name: Run tests
         run: make test
 
