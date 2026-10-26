@@ -254,6 +254,9 @@ mdns:
 logging:
   level: "info"                          # debug, info, warn, error
   format: "json"                         # json or console
+
+metrics:
+  enabled: false                         # Expose Prometheus metrics on /metrics
 ```
 
 ### Environment variables
@@ -284,6 +287,7 @@ Every config key can be set via an environment variable with the `PROXY_` prefix
 | `mdns.service_type` | `PROXY_MDNS_SERVICE_TYPE` | `_discord-proxy._tcp` |
 | `logging.level` | `PROXY_LOGGING_LEVEL` | `info` |
 | `logging.format` | `PROXY_LOGGING_FORMAT` | `json` |
+| `metrics.enabled` | `PROXY_METRICS_ENABLED` | `false` |
 
 > **Breaking change**: the legacy `PROXY_TOKEN` env var was removed. `PROXY_AUTH_TOKEN` is now the sole env source for `auth.token` — update any scripts or containers still setting `PROXY_TOKEN`.
 

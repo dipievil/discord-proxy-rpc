@@ -50,12 +50,17 @@ type LoggingConfig struct {
 	Format string `mapstructure:"format" yaml:"format"`
 }
 
+type MetricsConfig struct {
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+}
+
 type Config struct {
 	Discord DiscordConfig `mapstructure:"discord" yaml:"discord"`
 	Server  ServerConfig  `mapstructure:"server"  yaml:"server"`
 	Auth    AuthConfig    `mapstructure:"auth"    yaml:"auth"`
 	Mdns    MdnsConfig    `mapstructure:"mdns"    yaml:"mdns"`
 	Logging LoggingConfig `mapstructure:"logging" yaml:"logging"`
+	Metrics MetricsConfig `mapstructure:"metrics" yaml:"metrics"`
 }
 
 func setDefaults(v *viper.Viper) {
@@ -85,6 +90,8 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.format", "json")
+
+	v.SetDefault("metrics.enabled", false)
 }
 
 func setupEnv(v *viper.Viper) {
@@ -118,6 +125,8 @@ func setupEnv(v *viper.Viper) {
 
 	_ = v.BindEnv("logging.level", "PROXY_LOGGING_LEVEL")
 	_ = v.BindEnv("logging.format", "PROXY_LOGGING_FORMAT")
+
+	_ = v.BindEnv("metrics.enabled", "PROXY_METRICS_ENABLED")
 }
 
 func configFileSearchPaths() []string {
