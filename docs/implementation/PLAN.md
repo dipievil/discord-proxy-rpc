@@ -153,7 +153,7 @@ Wire everything together, hardening, documentation.
 | - [x] 7.6 | README.md | Complete: install, config, Discord app, run, dashboard, build | New user can run from scratch in <5 min |
 | - [x] 7.7 | E2E test script | `scripts/e2e.sh`: start proxy, connect mock Discord, verify WS | CI can run full stack test |
 | - [x] 7.8 | Panic recovery middleware | Wire `RecoveryMiddleware` into `Server.ServeHTTP` (was dead code) | Panicking HTTP handler returns 500 `INT_001` instead of crashing the process |
-| - [x] 7.9 | `client_id` in WS state messages | Set `Hub.ClientID` so `state`/`current` messages carry the Discord App ID | `state`/`current` frames include `client_id` when configured |
+| - [x] 7.9 | `client_id` in WS state messages | Set `Hub.ClientID` so `state`/`current` messages carry the Discord App ID | `state`/`current` frames include `client_id` (required at startup) |
 | - [x] 7.10 | Auth deduplication | Collapse `main.go` `newAuthFunc` vs `server.AuthMiddleware` into a single `BearerAuthFunc` validation path | One shared token validation path for HTTP and WS |
 | - [x] 7.11 | Health endpoint docs | Document `/healthz` and `/readyz`; reconcile the `/health` payload with the SPEC | SPEC/README endpoint tables match the implementation |
 | - [x] 7.12 | Error codes + WS error frames | Wire up the error-code constants (`AUTH_001`…`REQ_003`); reply to invalid WS messages with an `error` frame | Invalid client messages get `{type:"error",payload:{code,message}}`; no unused error constants |

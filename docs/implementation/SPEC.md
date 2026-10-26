@@ -135,11 +135,11 @@ The server echoes the offered `proxy-token-*` subprotocol back on success so the
 
 ```json
 { "type": "presence", "payload": { "source": "none", "activity": null } }
-{ "type": "state", "status": "connected|disconnected|reconnecting", "client_id": "optional Discord App ID" }
-{ "type": "current", "payload": { "source": "none", "activity": null }, "client_id": "optional Discord App ID" }
+{ "type": "state", "status": "connected|disconnected|reconnecting", "client_id": "Discord App ID" }
+{ "type": "current", "payload": { "source": "none", "activity": null }, "client_id": "Discord App ID" }
 ```
 
-`payload` on `presence` and `current` is a **presence snapshot** (see [Activity source](#activity-source)); `activity` is `null` whenever `source` is `"none"`. `client_id` (the Discord Application ID from `discord.client_id`) is included on `state` and `current` messages when configured, so clients can identify which Discord account the proxy is attached to.
+`payload` on `presence` and `current` is a **presence snapshot** (see [Activity source](#activity-source)); `activity` is `null` whenever `source` is `"none"`. `client_id` (the Discord Application ID from `discord.client_id`) is always included on `state` and `current` messages — it is required at startup (task 9.3) — so clients can identify which Discord account the proxy is attached to.
 
 **Client → Server**
 

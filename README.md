@@ -262,7 +262,7 @@ Every config key can be set via an environment variable with the `PROXY_` prefix
 
 | Config Key | Env Variable | Default |
 |------------|-------------|---------|
-| `discord.client_id` | `PROXY_DISCORD_CLIENT_ID` | `""` |
+| `discord.client_id` | `PROXY_DISCORD_CLIENT_ID` | (required — the proxy refuses to start without it) |
 | `discord.auto_reconnect` | `PROXY_DISCORD_AUTO_RECONNECT` | `true` |
 | `discord.reconnect_base_interval` | `PROXY_DISCORD_RECONNECT_BASE_INTERVAL` | `5s` |
 | `discord.max_reconnect_interval` | `PROXY_DISCORD_MAX_RECONNECT_INTERVAL` | `60s` |
