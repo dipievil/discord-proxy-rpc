@@ -222,6 +222,16 @@ Post-v0.1 extensions; out of scope for the first release.
 | [ ] 10.4 | Client SDK / CLI example | Reference client (Go lib + CLI) for LAN consumers | Example app consumes the WS API in <20 lines |
 | [ ] 10.5 | mDNS browse/discovery helper | CLI helper to browse `_discord-proxy._tcp` and print endpoints | Helper prints host:port of running proxies on the LAN |
 
+#### Task 10.4 — implementation notes
+
+Delivered as `examples/consumer/` (CLI), not a full SDK library — the smallest deliverable meeting the acceptance criteria and matching the Trello card wording ("SDK/CLI example consumer"). Decisions:
+
+- **Copy-pasteability**: the example duplicates the tiny wire-protocol structs (server message envelope + error payload) instead of importing `internal/server`, so a LAN consumer can paste it into any Go project. `pkg/types` (public module path) is the only repo import, used for activity payloads.
+- **Default `-addr` is `ws://127.0.0.1:8765/ws`** — the server's actual default (`server.port: 8765`, `server.ws_path: /ws`), not `ws://127.0.0.1:8080/ws` as originally sketched, so the example works out of the box.
+- **Auth is `Authorization: Bearer <token>` only**: the server (`internal/server/auth.go`) accepts a bearer header or the browser-only `proxy-token-<base64url>` subprotocol; there is **no `?token=` query-param auth** on the upgrade (the dashboard's `?token=` is consumed client-side and stored in `sessionStorage`). The example uses the header.
+- **Behaviour**: subscribes to `presence`/`state`/`current`, sends `get_current` on connect for an immediate snapshot, answers server pings, reconnects with exponential backoff (1s→30s, reset after a successful session), exits cleanly on SIGINT/SIGTERM.
+- **Payload contract**: presence/current payloads are the post-#56 `types.PresenceSnapshot` envelope (`{source, activity}`); the example prints the `source` so "no activity source" (`activity: null`, `source: "none"`) is visibly distinct from a cleared activity.
+
 ---
 
 ## Dependencies Between Phases
