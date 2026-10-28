@@ -15,6 +15,7 @@ A lightweight, read-only LAN proxy that connects to Discord's local IPC socket a
 - [Discord App Setup](#discord-app-setup)
 - [Configuration Reference](#configuration-reference)
 - [Dashboard](#dashboard)
+- [TUI Dashboard](#tui-dashboard)
 - [API Reference](#api-reference)
 - [Building from Source](#building-from-source)
 - [Troubleshooting](#troubleshooting)
@@ -316,6 +317,39 @@ The dashboard is an embedded web SPA served at the root path (`/`). It provides:
 mDNS auto-discovery works out of the box on most networks. On Linux, ensure Avahi is running. On macOS, it is built-in. On Windows, install Bonjour Print Services or use mDNS manually.
 
 When `auth.enabled` is true, the dashboard cannot send an `Authorization` header. Open the dashboard once with the token in the URL — `http://<host>:8765/?token=<your-token>` — and it stores the token in `sessionStorage`, strips it from the address bar, and authenticates the WebSocket with it on every (re)connect. The same request sets a short-lived (15 min) `HttpOnly` cookie so the page's static assets, and a reload within that window, load without the token in the URL. The token is scoped to that tab and discarded when it closes; other API clients still send their own `Authorization` header or `?token=`.
+
+---
+
+## TUI Dashboard
+
+The same WebSocket API is also available as a terminal dashboard, so hosts without a browser can watch the proxy. The TUI (`cmd/tui`) renders the current presence snapshot, the WebSocket and Discord IPC connection health, and reconnects with exponential backoff on disconnect.
+
+Build it with:
+
+```bash
+make tui    # produces bin/discord-proxy-tui
+```
+
+Run it:
+
+```bash
+# Against a local proxy with no auth
+bin/discord-proxy-tui
+
+# Remote proxy with authentication
+bin/discord-proxy-tui -addr 192.168.0.103:8765 -token <your-token>
+
+# Or via environment variables
+PROXY_HOST=192.168.0.103 PROXY_PORT=8765 PROXY_AUTH_TOKEN=<your-token> bin/discord-proxy-tui
+```
+
+| Flag | Env | Default |
+|------|-----|---------|
+| `-addr` | `PROXY_HOST` + `PROXY_PORT` (or `PROXY_SERVER_PORT`) | `127.0.0.1:8765` |
+| `-token` | `PROXY_TOKEN` (legacy, wins) / `PROXY_AUTH_TOKEN` | none |
+| `-ws-path` | `PROXY_SERVER_WS_PATH` | `/ws` |
+
+`-addr` also accepts a full `ws://` or `wss://` URL, which is used as-is. Press `q`, `Esc` or `Ctrl+C` to quit. Like the web dashboard, the TUI shows an explicit "No activity source" notice while the proxy has no activity source (see [Activity source](#activity-source)).
 
 ---
 
