@@ -4,6 +4,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -15,6 +16,7 @@ type RateLimiter struct {
 	stop     chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
+	rejected atomic.Uint64
 }
 
 type visitor struct {
@@ -60,12 +62,20 @@ func (rl *RateLimiter) Allow(ip string) bool {
 	}
 
 	if v.count >= rl.rate {
+		rl.rejected.Add(1)
 		return false
 	}
 
 	v.count++
 	v.lastSeen = time.Now()
 	return true
+}
+
+// Rejections reports how many requests Allow has denied since creation. It
+// feeds the Prometheus rate-limit rejection counter without duplicating the
+// limiter's counting logic.
+func (rl *RateLimiter) Rejections() uint64 {
+	return rl.rejected.Load()
 }
 
 func (rl *RateLimiter) cleanup() {

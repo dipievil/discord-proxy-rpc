@@ -15,6 +15,7 @@ A lightweight, read-only LAN proxy that connects to Discord's local IPC socket a
 - [Discord App Setup](#discord-app-setup)
 - [Configuration Reference](#configuration-reference)
 - [Dashboard](#dashboard)
+- [TUI Dashboard](#tui-dashboard)
 - [API Reference](#api-reference)
 - [Building from Source](#building-from-source)
 - [Troubleshooting](#troubleshooting)
@@ -254,6 +255,9 @@ mdns:
 logging:
   level: "info"                          # debug, info, warn, error
   format: "json"                         # json or console
+
+metrics:
+  enabled: false                         # Expose Prometheus metrics on /metrics
 ```
 
 ### Environment variables
@@ -262,7 +266,7 @@ Every config key can be set via an environment variable with the `PROXY_` prefix
 
 | Config Key | Env Variable | Default |
 |------------|-------------|---------|
-| `discord.client_id` | `PROXY_DISCORD_CLIENT_ID` | `""` |
+| `discord.client_id` | `PROXY_DISCORD_CLIENT_ID` | (required — the proxy refuses to start without it) |
 | `discord.auto_reconnect` | `PROXY_DISCORD_AUTO_RECONNECT` | `true` |
 | `discord.reconnect_base_interval` | `PROXY_DISCORD_RECONNECT_BASE_INTERVAL` | `5s` |
 | `discord.max_reconnect_interval` | `PROXY_DISCORD_MAX_RECONNECT_INTERVAL` | `60s` |
@@ -279,14 +283,14 @@ Every config key can be set via an environment variable with the `PROXY_` prefix
 | `server.rate_limit_window` | `PROXY_SERVER_RATE_LIMIT_WINDOW` | `1m` |
 | `auth.enabled` | `PROXY_AUTH_ENABLED` | `false` |
 | `auth.token` | `PROXY_AUTH_TOKEN` | `""` |
-| `auth.token` | `PROXY_TOKEN` | `""` |
 | `mdns.enabled` | `PROXY_MDNS_ENABLED` | `true` |
 | `mdns.instance_name` | `PROXY_MDNS_INSTANCE_NAME` | `""` |
 | `mdns.service_type` | `PROXY_MDNS_SERVICE_TYPE` | `_discord-proxy._tcp` |
 | `logging.level` | `PROXY_LOGGING_LEVEL` | `info` |
 | `logging.format` | `PROXY_LOGGING_FORMAT` | `json` |
+| `metrics.enabled` | `PROXY_METRICS_ENABLED` | `false` |
 
-The legacy `PROXY_TOKEN` env var is also supported for `auth.token`, but it **takes precedence over `PROXY_AUTH_TOKEN` when both are set**. It is deprecated and scheduled for removal — use `PROXY_AUTH_TOKEN` only.
+> **Breaking change**: the legacy `PROXY_TOKEN` env var was removed. `PROXY_AUTH_TOKEN` is now the sole env source for `auth.token` — update any scripts or containers still setting `PROXY_TOKEN`.
 
 ---
 
@@ -312,7 +316,40 @@ The dashboard is an embedded web SPA served at the root path (`/`). It provides:
 
 mDNS auto-discovery works out of the box on most networks. On Linux, ensure Avahi is running. On macOS, it is built-in. On Windows, install Bonjour Print Services or use mDNS manually.
 
-When `auth.enabled` is true, the dashboard cannot send an `Authorization` header. Open the dashboard once with the token in the URL — `http://<host>:8765/?token=<your-token>` — and it stores the token in `sessionStorage`, strips it from the address bar, and authenticates the WebSocket with it on every (re)connect. The token is scoped to that tab and discarded when it closes; other API clients still send their own `Authorization` header.
+When `auth.enabled` is true, the dashboard cannot send an `Authorization` header. Open the dashboard once with the token in the URL — `http://<host>:8765/?token=<your-token>` — and it stores the token in `sessionStorage`, strips it from the address bar, and authenticates the WebSocket with it on every (re)connect. The same request sets a short-lived (15 min) `HttpOnly` cookie so the page's static assets, and a reload within that window, load without the token in the URL. The token is scoped to that tab and discarded when it closes; other API clients still send their own `Authorization` header or `?token=`.
+
+---
+
+## TUI Dashboard
+
+The same WebSocket API is also available as a terminal dashboard, so hosts without a browser can watch the proxy. The TUI (`cmd/tui`) renders the current presence snapshot, the WebSocket and Discord IPC connection health, and reconnects with exponential backoff on disconnect.
+
+Build it with:
+
+```bash
+make tui    # produces bin/discord-proxy-tui
+```
+
+Run it:
+
+```bash
+# Against a local proxy with no auth
+bin/discord-proxy-tui
+
+# Remote proxy with authentication
+bin/discord-proxy-tui -addr 192.168.0.103:8765 -token <your-token>
+
+# Or via environment variables
+PROXY_HOST=192.168.0.103 PROXY_PORT=8765 PROXY_AUTH_TOKEN=<your-token> bin/discord-proxy-tui
+```
+
+| Flag | Env | Default |
+|------|-----|---------|
+| `-addr` | `PROXY_HOST` + `PROXY_PORT` (or `PROXY_SERVER_PORT`) | `127.0.0.1:8765` |
+| `-token` | `PROXY_TOKEN` (legacy, wins) / `PROXY_AUTH_TOKEN` | none |
+| `-ws-path` | `PROXY_SERVER_WS_PATH` | `/ws` |
+
+`-addr` also accepts a full `ws://` or `wss://` URL, which is used as-is. Press `q`, `Esc` or `Ctrl+C` to quit. Like the web dashboard, the TUI shows an explicit "No activity source" notice while the proxy has no activity source (see [Activity source](#activity-source)).
 
 ---
 
@@ -334,6 +371,8 @@ When `auth.enabled` is true, the dashboard cannot send an `Authorization` header
 - `/health` — Rich variant for debugging/monitoring; always returns 200 with IPC state embedded
 - `/healthz` — Minimal, spec-conformant liveness probe for Kubernetes; always returns 200 if process is alive
 - `/readyz` — Readiness probe for Kubernetes; returns 200 only when IPC is connected, 503 otherwise
+
+**Access control:** with `auth.enabled: true`, `/`, `/index.html`, the static assets, `/api/presence` and `/api/state` require the token (`Authorization: Bearer <token>` or `?token=<token>`); an unauthenticated request gets HTTP 401 — a JSON `AUTH_001` body on `/api/*`, plain text on the dashboard. `/health`, `/healthz` and `/readyz` are never auth-gated.
 
 #### Kubernetes Probes
 
@@ -377,7 +416,7 @@ Browser clients (such as the dashboard), which cannot set request headers, send 
 ```
 Sec-WebSocket-Protocol: proxy-token-<base64url(token)>
 ```
-The dashboard produces this automatically when given `?token=<your-token>` in the page URL.
+The dashboard produces this automatically when given `?token=<your-token>` in the page URL. For plain HTTP requests (REST and the dashboard itself) the token may also be supplied as `?token=<token>`; a successful query-token request sets a short-lived auth cookie so the page's static assets load without it.
 
 **Client -> Server messages:**
 
@@ -450,6 +489,32 @@ Current state response (`payload` is the same presence snapshot shape):
 | 3 | Watching |
 | 4 | Custom |
 | 5 | Competing |
+
+### Example Consumer
+
+`examples/consumer/` contains a minimal, copy-pasteable CLI client that shows how to consume the WebSocket API from any LAN machine:
+
+```bash
+go run ./examples/consumer -addr ws://127.0.0.1:8765/ws -token <your-token>
+# or, with the token in the environment:
+PROXY_AUTH_TOKEN=<your-token> go run ./examples/consumer
+```
+
+It authenticates with a Bearer header, subscribes to `presence`/`state`/`current`, requests the current snapshot on connect, prints every update as it arrives, reconnects with exponential backoff if the proxy restarts, and exits cleanly on `Ctrl-C`:
+
+```
+connected to ws://127.0.0.1:8765/ws
+current: no activity source (none)
+state: discord connected (client 123456789012345678)
+```
+
+Each line is the human-readable rendering of one server message, including the snapshot's `source` field (see [Activity source](#activity-source)). With a real activity source wired up, updates render as:
+
+```
+presence: In a match | Winning 3-1 [Playing] party 3/5 (source: ipc)
+```
+
+The `-token` flag is only needed when the proxy runs with `auth.enabled: true`; the example intentionally duplicates the small wire-protocol structs instead of importing this module's internals so it can be pasted into any Go project as-is.
 
 ---
 
@@ -542,8 +607,9 @@ This is expected today. Discord's local IPC socket does not expose another appli
 
 ### 6. Auth token rejected
 
-- Verify `auth.enabled: true` and `auth.token` / `PROXY_TOKEN` match on both server and client.
-- The token must be sent as `Authorization: Bearer <token>` on the WebSocket upgrade request.
+- Verify `auth.enabled: true` and `auth.token` / `PROXY_AUTH_TOKEN` match on both server and client (the legacy `PROXY_TOKEN` env var is no longer read).
+- For REST and dashboard requests, send the token as `Authorization: Bearer <token>`, as `?token=<token>`, or open the dashboard with `?token=<token>` in the URL.
+- The WebSocket upgrade takes it as `Authorization: Bearer <token>` or the `proxy-token-<base64url(token)>` subprotocol.
 - Check for trailing whitespace or newline characters in the token.
 
 ---
@@ -552,7 +618,7 @@ This is expected today. Discord's local IPC socket does not expose another appli
 
 - **Read-only by design** -- The proxy never sends `SET_ACTIVITY` or any write command to Discord. It only observes.
 - **LAN only** -- Binds to `0.0.0.0` by default. Restrict via firewall rules or bind to `127.0.0.1` and use a VPN (e.g., Tailscale) for remote access.
-- **Optional token auth** -- Enable `auth.enabled: true` and set a strong token via `PROXY_TOKEN`. Without auth, any device on the LAN can connect.
+- **Optional token auth** -- Enable `auth.enabled: true` and set a strong token via `PROXY_AUTH_TOKEN` (or `auth.token` in the config file). It protects the WebSocket upgrade, the REST endpoints (`/api/*`) and the dashboard; the health probes stay open for orchestrators. Without auth, any device on the LAN can read the presence data.
 - **No persistence** -- No database, no log files, no presence data stored on disk. Everything is in-memory and lost on restart.
 - **mDNS is informational only** -- The mDNS TXT record contains only the API version (`v=1`). No sensitive data is broadcast.
 - **WebSocket traffic is plaintext** -- For encrypted transport, place the proxy behind a TLS-terminating reverse proxy (e.g., nginx, Caddy).
