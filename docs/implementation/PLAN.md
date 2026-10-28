@@ -153,7 +153,7 @@ Wire everything together, hardening, documentation.
 | - [x] 7.6 | README.md | Complete: install, config, Discord app, run, dashboard, build | New user can run from scratch in <5 min |
 | - [x] 7.7 | E2E test script | `scripts/e2e.sh`: start proxy, connect mock Discord, verify WS | CI can run full stack test |
 | - [x] 7.8 | Panic recovery middleware | Wire `RecoveryMiddleware` into `Server.ServeHTTP` (was dead code) | Panicking HTTP handler returns 500 `INT_001` instead of crashing the process |
-| - [x] 7.9 | `client_id` in WS state messages | Set `Hub.ClientID` so `state`/`current` messages carry the Discord App ID | `state`/`current` frames include `client_id` when configured |
+| - [x] 7.9 | `client_id` in WS state messages | Set `Hub.ClientID` so `state`/`current` messages carry the Discord App ID | `state`/`current` frames include `client_id` (required at startup) |
 | - [x] 7.10 | Auth deduplication | Collapse `main.go` `newAuthFunc` vs `server.AuthMiddleware` into a single `BearerAuthFunc` validation path | One shared token validation path for HTTP and WS |
 | - [x] 7.11 | Health endpoint docs | Document `/healthz` and `/readyz`; reconcile the `/health` payload with the SPEC | SPEC/README endpoint tables match the implementation |
 | - [x] 7.12 | Error codes + WS error frames | Wire up the error-code constants (`AUTH_001`…`REQ_003`); reply to invalid WS messages with an `error` frame | Invalid client messages get `{type:"error",payload:{code,message}}`; no unused error constants |
@@ -176,7 +176,7 @@ Fix defects found after integration review and harden the CI pipeline.
 | ID | Task | Description | Acceptance Criteria |
 |----|------|-------------|---------------------|
 | - [x] 8.1 | Windows Discord pipe path | Return the actual Windows named-pipe path (`\\.\pipe\discord-ipc-{0..9}`) from the platform resolver | Windows build resolves a real Discord pipe path |
-| - [x] 8.2 | Bind documented auth token env | Bind `PROXY_AUTH_TOKEN` in config, keeping legacy `PROXY_TOKEN` as fallback | Documented env vars actually set `auth.token` |
+| - [x] 8.2 | Bind documented auth token env | Bind `PROXY_AUTH_TOKEN` in config, keeping legacy `PROXY_TOKEN` as fallback (historical: the legacy `PROXY_TOKEN` fallback was later removed by task 9.6) | Documented env vars actually set `auth.token` |
 | - [ ] 8.3 | Flaky IPC healthcheck test | Fix `panic: close of nil channel` flake in the `internal/ipc` healthcheck test | `go test ./internal/ipc/... -count=1` passes repeatedly |
 | - [ ] 8.4 | Presence Start/Stop deadlock | Fix deadlock that hangs `TestConcurrentUpdateAndRead` (dev CI red) | `go test ./internal/state/... -race` green, no hangs |
 | - [x] 8.5 | Explicit test/job timeouts | Add `timeout-minutes` to CI jobs and `-timeout` to `go test` invocations | No job can hang for the default runner timeout again |
@@ -198,12 +198,12 @@ Close the remaining security gaps and cut the first public release.
 
 | ID | Task | Description | Acceptance Criteria |
 |----|------|-------------|---------------------|
-| [ ] 9.1 | REST/dashboard auth coverage | Extend token auth beyond the WS upgrade to `/` and `/api/*` (decide for `/health*`) | With `auth.enabled: true`, sensitive endpoints reject unauthenticated requests |
+| [x] 9.1 | REST/dashboard auth coverage | Extend token auth beyond the WS upgrade to `/` and `/api/*` (health probes stay open for k8s) | With `auth.enabled: true`, sensitive endpoints reject unauthenticated requests |
 | [ ] 9.2 | Rate-limit REST/dashboard endpoints | Apply the per-IP rate limiter to HTTP routes, not only WS upgrades | Abuse of REST endpoints is throttled with 429 |
 | [ ] 9.3 | Fail fast on missing `discord.client_id` | Refuse to start with a clear error when `discord.client_id` is empty | Misconfigured runs abort at startup instead of silently flapping |
 | [ ] 9.4 | Cut first release | Merge `dev` → `main`, tag `v0.1.0`, publish release binaries | v0.1.0 published with binaries for all platforms |
-| [ ] 9.5 | Branch protection + required review | Protect `main`/`dev`: require PR + green CI + at least 1 review | Direct pushes blocked; CI required to merge |
-| [ ] 9.6 | Remove legacy `PROXY_TOKEN` env var | Drop the `PROXY_TOKEN` override in `internal/config/config.go` (`setupEnv`); bind `auth.token` to `PROXY_AUTH_TOKEN` only; update `TestProxyTokenEnvVar` in `config_test.go` and all docs mentioning the legacy var (SPEC §Auth, README, `configs/config.example.yaml`). Currently `PROXY_TOKEN` wins over `PROXY_AUTH_TOKEN` when both are set — a migration footgun | `PROXY_TOKEN` is ignored; `PROXY_AUTH_TOKEN` is the sole env source; released as a breaking change (`feat!:` + `BREAKING CHANGE` footer) |
+| [ ] 9.5 | Branch protection + required review | Protect `main`/`dev`: require PR + green CI (Lint, Test, Build, E2E Tests, strict); `dev` needs 1 approving review with admin bypass (`enforce_admins: false`), `main` enforces admins with 0 required approvals — the sole repo account cannot self-approve its own PR, so requiring 1 review there would block every merge | Direct pushes to `main` blocked even for admins; CI required to merge both branches; `dev` admin may still merge |
+| [x] 9.6 | Remove legacy `PROXY_TOKEN` env var | Drop the `PROXY_TOKEN` override in `internal/config/config.go` (`setupEnv`); bind `auth.token` to `PROXY_AUTH_TOKEN` only; update `TestProxyTokenEnvVar` in `config_test.go` and all docs mentioning the legacy var (SPEC §Auth, README, `configs/config.example.yaml`). Previously `PROXY_TOKEN` won over `PROXY_AUTH_TOKEN` when both were set — a migration footgun | `PROXY_TOKEN` is ignored; `PROXY_AUTH_TOKEN` is the sole env source; released as a breaking change (`feat!:` + `BREAKING CHANGE` footer) |
 
 ---
 
@@ -221,6 +221,16 @@ Post-v0.1 extensions; out of scope for the first release.
 | [ ] 10.3 | System tray indicator | Tray icon on the host machine showing Discord connection state | Icon reflects connected/disconnected in real time |
 | [ ] 10.4 | Client SDK / CLI example | Reference client (Go lib + CLI) for LAN consumers | Example app consumes the WS API in <20 lines |
 | [ ] 10.5 | mDNS browse/discovery helper | CLI helper to browse `_discord-proxy._tcp` and print endpoints | Helper prints host:port of running proxies on the LAN |
+
+#### Task 10.4 — implementation notes
+
+Delivered as `examples/consumer/` (CLI), not a full SDK library — the smallest deliverable meeting the acceptance criteria and matching the Trello card wording ("SDK/CLI example consumer"). Decisions:
+
+- **Copy-pasteability**: the example duplicates the tiny wire-protocol structs (server message envelope + error payload) instead of importing `internal/server`, so a LAN consumer can paste it into any Go project. `pkg/types` (public module path) is the only repo import, used for activity payloads.
+- **Default `-addr` is `ws://127.0.0.1:8765/ws`** — the server's actual default (`server.port: 8765`, `server.ws_path: /ws`), not `ws://127.0.0.1:8080/ws` as originally sketched, so the example works out of the box.
+- **Auth is `Authorization: Bearer <token>` only**: the server (`internal/server/auth.go`) accepts a bearer header or the browser-only `proxy-token-<base64url>` subprotocol; there is **no `?token=` query-param auth** on the upgrade (the dashboard's `?token=` is consumed client-side and stored in `sessionStorage`). The example uses the header.
+- **Behaviour**: subscribes to `presence`/`state`/`current`, sends `get_current` on connect for an immediate snapshot, answers server pings, reconnects with exponential backoff (1s→30s, reset after a successful session), exits cleanly on SIGINT/SIGTERM.
+- **Payload contract**: presence/current payloads are the post-#56 `types.PresenceSnapshot` envelope (`{source, activity}`); the example prints the `source` so "no activity source" (`activity: null`, `source: "none"`) is visibly distinct from a cleared activity.
 
 ---
 
