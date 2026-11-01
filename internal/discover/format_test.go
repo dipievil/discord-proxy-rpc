@@ -3,6 +3,7 @@ package discover
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -19,7 +20,8 @@ func sampleResults() []Result {
 		{
 			Instance:  "proxy-2",
 			Host:      "proxy-2.local.",
-			Addresses: []string{"192.168.0.11", "fe80::1"},
+			Addresses: []string{"192.168.0.11"},
+			LinkLocal: []string{"fe80::1"},
 			Port:      8766,
 			TXT:       map[string]string{},
 		},
@@ -33,10 +35,56 @@ func TestWriteTable(t *testing.T) {
 	}
 	out := buf.String()
 
-	for _, want := range []string{"INSTANCE", "HOST", "ADDRESS", "PORT", "TXT", "proxy-1", "proxy-1.local.", "192.168.0.10", "8765", "v=1", "client_id=123", "proxy-2", "192.168.0.11,fe80::1", "8766"} {
+	for _, want := range []string{"INSTANCE", "HOST", "ADDRESS", "PORT", "TXT", "proxy-1", "proxy-1.local.", "192.168.0.10", "8765", "v=1", "client_id=123", "proxy-2", "192.168.0.11 (+1 link-local)", "8766"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table output missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "fe80::1") {
+		t.Errorf("table output prints a link-local address:\n%s", out)
+	}
+}
+
+func TestWriteTableSanitizesAnnouncement(t *testing.T) {
+	results := []Result{{
+		Instance:  "evil\x1b[2J",
+		Host:      "host\tname",
+		Addresses: []string{"192.168.0.10\n"},
+		Port:      8765,
+		TXT:       map[string]string{"k": "v\x07"},
+	}}
+
+	var buf bytes.Buffer
+	if err := WriteTable(&buf, results); err != nil {
+		t.Fatalf("WriteTable: %v", err)
+	}
+	out := buf.String()
+
+	if strings.ContainsAny(out, "\x1b\x07\r") {
+		t.Errorf("table output contains control characters: %q", out)
+	}
+}
+
+func TestWriteJSONPreservesAnnouncement(t *testing.T) {
+	results := []Result{{
+		Instance:  "evil\x1b[2J",
+		Host:      "host\tname",
+		Addresses: []string{"192.168.0.10"},
+		Port:      8765,
+		TXT:       map[string]string{"k": "v\x07"},
+	}}
+
+	var buf bytes.Buffer
+	if err := WriteJSON(&buf, results); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+
+	var out Output
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if got := out.Proxies[0].Instance; got != "evil\x1b[2J" {
+		t.Errorf("Instance = %q, want the raw value", got)
 	}
 }
 
@@ -69,6 +117,9 @@ func TestWriteResultsJSON(t *testing.T) {
 	if len(out.Proxies) != 2 || out.Proxies[0].Instance != "proxy-1" {
 		t.Errorf("Proxies = %+v, want two entries starting with proxy-1", out.Proxies)
 	}
+	if got := out.Proxies[1].LinkLocal; len(got) != 1 || got[0] != "fe80::1" {
+		t.Errorf("LinkLocal = %v, want [fe80::1]", got)
+	}
 	if stderr.Len() != 0 {
 		t.Errorf("stderr = %q, want empty", stderr.String())
 	}
@@ -92,6 +143,31 @@ func TestWriteResultsJSONEmpty(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "no proxies found") {
 		t.Errorf("stderr = %q, want \"no proxies found\" note", stderr.String())
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+func TestWriteResultsReportsWriteErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		results []Result
+		asJSON  bool
+	}{
+		{"table note", nil, false},
+		{"json note", nil, true},
+		{"table rows", sampleResults(), false},
+		{"json rows", sampleResults(), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := WriteResults(failingWriter{}, failingWriter{}, tc.results, tc.asJSON)
+			if err == nil {
+				t.Fatal("WriteResults error = nil, want the write error")
+			}
+		})
 	}
 }
 
@@ -121,5 +197,25 @@ func TestFormatAddresses(t *testing.T) {
 	}
 	if got := formatAddresses([]string{"a", "b"}); got != "a,b" {
 		t.Errorf("formatAddresses = %q, want a,b", got)
+	}
+}
+
+func TestFormatAddressCell(t *testing.T) {
+	cases := []struct {
+		name string
+		in   Result
+		want string
+	}{
+		{"none", Result{}, "-"},
+		{"routable", Result{Addresses: []string{"10.0.0.1"}}, "10.0.0.1"},
+		{"link-local only", Result{LinkLocal: []string{"fe80::1", "fe80::2"}}, "- (+2 link-local)"},
+		{"mixed", Result{Addresses: []string{"10.0.0.1"}, LinkLocal: []string{"fe80::1"}}, "10.0.0.1 (+1 link-local)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatAddressCell(tc.in); got != tc.want {
+				t.Errorf("formatAddressCell() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

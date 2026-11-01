@@ -9,7 +9,8 @@
 //
 //	go run ./cmd/discover [-timeout 5s] [-json]
 //
-// Exit codes: 0 on success (including "no proxies found"), 1 on failure.
+// Exit codes: 0 on success (including "no proxies found"), 1 when browsing or
+// writing fails, 2 on a usage error such as a non-positive -timeout.
 package main
 
 import (
@@ -28,10 +29,16 @@ func main() {
 	asJSON := flag.Bool("json", false, "emit machine-readable JSON instead of a table")
 	flag.Parse()
 
+	if *timeout <= 0 {
+		fmt.Fprintln(os.Stderr, "error: -timeout must be positive")
+		flag.Usage()
+		os.Exit(2)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	results, err := discover.Browse(ctx, mdns.DefaultServiceType)
+	results, err := discover.Browse(ctx, mdns.DefaultServiceType, mdns.Domain)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

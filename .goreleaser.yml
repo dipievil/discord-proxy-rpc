@@ -23,6 +23,23 @@ builds:
     ignore:
       - goos: windows
         goarch: arm64
+  - id: discover
+    main: ./cmd/discover
+    binary: discover
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
 
 archives:
   - id: default

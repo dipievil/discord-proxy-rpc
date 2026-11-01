@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"unicode"
 )
 
 // Output is the machine-readable envelope printed in -json mode.
@@ -25,13 +26,17 @@ func WriteResults(stdout, stderr io.Writer, results []Result, asJSON bool) error
 			return err
 		}
 		if len(results) == 0 {
-			fmt.Fprintln(stderr, "no proxies found")
+			if _, err := fmt.Fprintln(stderr, "no proxies found"); err != nil {
+				return fmt.Errorf("discover: write note: %w", err)
+			}
 		}
 		return nil
 	}
 
 	if len(results) == 0 {
-		fmt.Fprintln(stdout, "no proxies found")
+		if _, err := fmt.Fprintln(stdout, "no proxies found"); err != nil {
+			return fmt.Errorf("discover: write note: %w", err)
+		}
 		return nil
 	}
 	return WriteTable(stdout, results)
@@ -59,11 +64,38 @@ func WriteTable(w io.Writer, results []Result) error {
 	}
 	for _, r := range results {
 		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n",
-			r.Instance, r.Host, formatAddresses(r.Addresses), r.Port, formatTXT(r.TXT)); err != nil {
+			sanitize(r.Instance),
+			sanitize(r.Host),
+			sanitize(formatAddressCell(r)),
+			r.Port,
+			sanitize(formatTXT(r.TXT))); err != nil {
 			return err
 		}
 	}
 	return tw.Flush()
+}
+
+// sanitize replaces control characters so an untrusted announcement cannot
+// inject ANSI escapes or extra columns into the table. JSON output is left
+// untouched because encoding/json already escapes control characters.
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+}
+
+// formatAddressCell renders the dialable addresses of r and notes how many
+// link-local addresses were withheld: those are not usable endpoints without
+// a zone and are only exposed in JSON output.
+func formatAddressCell(r Result) string {
+	cell := formatAddresses(r.Addresses)
+	if n := len(r.LinkLocal); n > 0 {
+		cell += fmt.Sprintf(" (+%d link-local)", n)
+	}
+	return cell
 }
 
 func formatAddresses(addresses []string) string {
