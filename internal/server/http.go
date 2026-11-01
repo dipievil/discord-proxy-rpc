@@ -23,6 +23,7 @@ type Server struct {
 	hub                *Hub
 	logger             *zap.Logger
 	wsHandler          *WSHandler
+	auth               func(*http.Request) bool
 	wsPath             string
 	getCurrentPresence func() types.PresenceSnapshot
 	getIPCState        func() string
@@ -46,6 +47,7 @@ func WithGetIPCState(fn func() string) ServerOption {
 
 func WithAuth(authFunc func(r *http.Request) bool) ServerOption {
 	return func(s *Server) {
+		s.auth = authFunc
 		s.wsHandler = s.wsHandler.WithAuth(authFunc)
 	}
 }
@@ -97,13 +99,45 @@ func NewServer(hub *Hub, logger *zap.Logger, opts ...ServerOption) *Server {
 }
 
 func (s *Server) registerRoutes() {
-	s.mux.HandleFunc("/", s.handleDashboard)
+	s.mux.HandleFunc("/", s.requireAuth(s.handleDashboard, false))
 	s.mux.HandleFunc(s.wsPath, s.rateLimitWS(s.wsHandler.ServeHTTP))
-	s.mux.HandleFunc("/api/presence", s.handlePresence)
-	s.mux.HandleFunc("/api/state", s.handleState)
+	s.mux.HandleFunc("/api/presence", s.requireAuth(s.handlePresence, true))
+	s.mux.HandleFunc("/api/state", s.requireAuth(s.handleState, true))
+	// Health endpoints stay open on purpose: they are consumed by container
+	// and Kubernetes probes, which cannot carry the bearer token.
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/readyz", s.handleReadyz)
+}
+
+// requireAuth gates a data route behind the configured bearer token when auth
+// is enabled; with auth disabled it returns the handler untouched. API routes
+// answer 401 with the standard JSON error envelope, while dashboard routes
+// answer a plain-text 401 because the browser renders the body directly.
+func (s *Server) requireAuth(next http.HandlerFunc, apiRoute bool) http.HandlerFunc {
+	if s.auth == nil {
+		return next
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.auth(r) {
+			if apiRoute {
+				writeAPIError(w, s.logger, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized")
+			} else {
+				http.Error(w, "unauthorized: open with ?token=<token> or send Authorization: Bearer <token>",
+					http.StatusUnauthorized)
+			}
+			return
+		}
+
+		// A token presented in the URL authenticated this request; remember it
+		// so the static assets the page loads next authenticate as well.
+		if token := extractQueryToken(r); token != "" {
+			setAuthCookie(w, r, token)
+		}
+
+		next.ServeHTTP(w, r)
+	}
 }
 
 // maxRequestBodyBytes caps the request body accepted on any route, so a

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,12 +50,17 @@ type LoggingConfig struct {
 	Format string `mapstructure:"format" yaml:"format"`
 }
 
+type MetricsConfig struct {
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+}
+
 type Config struct {
 	Discord DiscordConfig `mapstructure:"discord" yaml:"discord"`
 	Server  ServerConfig  `mapstructure:"server"  yaml:"server"`
 	Auth    AuthConfig    `mapstructure:"auth"    yaml:"auth"`
 	Mdns    MdnsConfig    `mapstructure:"mdns"    yaml:"mdns"`
 	Logging LoggingConfig `mapstructure:"logging" yaml:"logging"`
+	Metrics MetricsConfig `mapstructure:"metrics" yaml:"metrics"`
 }
 
 func setDefaults(v *viper.Viper) {
@@ -84,6 +90,8 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.format", "json")
+
+	v.SetDefault("metrics.enabled", false)
 }
 
 func setupEnv(v *viper.Viper) {
@@ -111,16 +119,14 @@ func setupEnv(v *viper.Viper) {
 	_ = v.BindEnv("auth.enabled", "PROXY_AUTH_ENABLED")
 	_ = v.BindEnv("auth.token", "PROXY_AUTH_TOKEN")
 
-	if token := os.Getenv("PROXY_TOKEN"); token != "" {
-		v.Set("auth.token", token)
-	}
-
 	_ = v.BindEnv("mdns.enabled", "PROXY_MDNS_ENABLED")
 	_ = v.BindEnv("mdns.instance_name", "PROXY_MDNS_INSTANCE_NAME")
 	_ = v.BindEnv("mdns.service_type", "PROXY_MDNS_SERVICE_TYPE")
 
 	_ = v.BindEnv("logging.level", "PROXY_LOGGING_LEVEL")
 	_ = v.BindEnv("logging.format", "PROXY_LOGGING_FORMAT")
+
+	_ = v.BindEnv("metrics.enabled", "PROXY_METRICS_ENABLED")
 }
 
 func configFileSearchPaths() []string {
@@ -159,7 +165,24 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("unmarshalling config: %w", err)
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	return &cfg, nil
+}
+
+func (c *Config) Validate() error {
+	id := strings.TrimSpace(c.Discord.ClientID)
+	if id == "" {
+		return errors.New("discord.client_id is required but empty: set it in config.yaml under \"discord.client_id\" or via the PROXY_DISCORD_CLIENT_ID environment variable (Discord Developer Portal > General Information > Application ID)")
+	}
+	if strings.ContainsFunc(id, func(r rune) bool { return r < '0' || r > '9' }) {
+		return fmt.Errorf("discord.client_id %q is not a valid Discord Application ID: expected digits only (Discord Developer Portal > General Information > Application ID)", id)
+	}
+	c.Discord.ClientID = id
+
+	return nil
 }
 
 func SetupLogger(level, format string) (*zap.Logger, error) {

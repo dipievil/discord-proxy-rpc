@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint
@@ -44,8 +48,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
-      - name: Install gcc (for race detector)
-        run: sudo apt-get update && sudo apt-get install -y gcc
+      - name: Verify race toolchain
+        run: |
+          if ! command -v gcc > /dev/null 2>&1; then
+            echo "::error::gcc not found; 'make test' would silently skip the race detector"
+            exit 1
+          fi
+          gcc --version | head -1
       - name: Run tests
         run: make test
 
@@ -77,8 +86,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
-      - name: Install gcc (for race detector)
-        run: sudo apt-get update && sudo apt-get install -y gcc
       - name: Run E2E tests
         env:
           E2E_PORT: 18765

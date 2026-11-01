@@ -12,9 +12,9 @@ import (
 )
 
 // This suite covers what integration_test.go does not: full presence lifecycles,
-// WS-only auth enforcement, and hub shutdown cleanup. Endpoint and broadcast
-// coverage lives in the integration suite (see testhelpers_test.go for the
-// shared harness).
+// end-to-end auth enforcement across the WS upgrade, REST and dashboard routes,
+// and hub shutdown cleanup. Endpoint and broadcast coverage lives in the
+// integration suite (see testhelpers_test.go for the shared harness).
 
 func TestE2EWSStateBroadcast(t *testing.T) {
 	hub, _, ts := newTestServer(t)
@@ -132,15 +132,47 @@ func TestE2EAuthRejectsUnauthorized(t *testing.T) {
 		waitForClientCount(t, hub, 1)
 	})
 
-	t.Run("rest endpoints remain accessible without token", func(t *testing.T) {
-		for _, ep := range []string{"/health", "/api/presence", "/api/state"} {
+	t.Run("rest and dashboard require token", func(t *testing.T) {
+		for _, ep := range []string{"/api/presence", "/api/state", "/"} {
+			resp, err := http.Get(ts.URL + ep)
+			if err != nil {
+				t.Fatalf("GET %s: %v", ep, err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("%s: status = %d, want %d (auth applies to REST and dashboard too)", ep, resp.StatusCode, http.StatusUnauthorized)
+			}
+		}
+	})
+
+	t.Run("rest and dashboard accept valid token", func(t *testing.T) {
+		for _, ep := range []string{"/api/presence", "/api/state", "/"} {
+			req, err := http.NewRequest(http.MethodGet, ts.URL+ep, nil)
+			if err != nil {
+				t.Fatalf("NewRequest %s: %v", ep, err)
+			}
+			req.Header.Set("Authorization", "Bearer "+validToken)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("GET %s: %v", ep, err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("%s: status = %d, want %d", ep, resp.StatusCode, http.StatusOK)
+			}
+		}
+	})
+
+	t.Run("health endpoints stay open", func(t *testing.T) {
+		for _, ep := range []string{"/health", "/healthz"} {
 			resp, err := http.Get(ts.URL + ep)
 			if err != nil {
 				t.Fatalf("GET %s: %v", ep, err)
 			}
 			resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {
-				t.Errorf("status = %d, want %d (auth only applies to WebSocket)", resp.StatusCode, http.StatusOK)
+				t.Errorf("%s: status = %d, want %d (probes are never auth-gated)", ep, resp.StatusCode, http.StatusOK)
 			}
 		}
 	})

@@ -113,11 +113,26 @@ The summary ends with either `No ACTIVITY frame was observed…` (confirming the
 | `/health` | GET | **Rich liveness probe** — includes IPC state | `{"status":"ok","ipc":"<state>"}` | — |
 | `/healthz` | GET | **Minimal liveness probe** (k8s-compatible) | `{"status":"ok"}` | — |
 | `/readyz` | GET | **Readiness probe** — reflects IPC connectivity | `{"status":"ok","ipc":"connected"}` | `{"status":"not ready","ipc":"disconnected"}` |
+| `/metrics` | GET | **Prometheus metrics** — only registered when `metrics.enabled: true` | Prometheus text exposition | — |
 
 **Endpoint rationale:**
 - `/health` — Rich variant for debugging/monitoring; always returns 200 with IPC state embedded
 - `/healthz` — Minimal, spec-conformant liveness probe for Kubernetes; always returns 200 if process is alive
 - `/readyz` — Readiness probe for Kubernetes; returns 200 only when IPC is connected, 503 otherwise
+- `/metrics` — Prometheus scrape endpoint (v1.1); disabled by default so nothing is exposed unless asked for
+
+#### Metrics (v1.1)
+
+When `metrics.enabled: true`, the server registers `/metrics` (Prometheus text format, `client_golang`). Collectors are fed from the live components — no duplicated counting logic:
+
+| Metric | Type | Source |
+|--------|------|--------|
+| `discord_proxy_ws_connected_clients` | gauge | `Hub.ClientCount()` at scrape time |
+| `discord_proxy_presence_coalesced_sends_total` | counter | presence subscription callback (fires once per coalesced flush) |
+| `discord_proxy_ipc_connected` | gauge (0/1) | IPC state getter at scrape time (`connected` ⇒ 1) |
+| `discord_proxy_rate_limit_rejections_total` | counter | `RateLimiter` denial counter |
+
+**Access control:** when `auth.enabled: true`, `/`, `/index.html`, the embedded static assets, `/api/presence` and `/api/state` require the bearer token; `/health`, `/healthz` and `/readyz` stay open so probes work without credentials. API routes answer an unauthenticated request with the `AUTH_001` JSON envelope (HTTP 401), while the dashboard answers a plain-text 401.
 
 #### WebSocket Protocol
 
@@ -135,11 +150,11 @@ The server echoes the offered `proxy-token-*` subprotocol back on success so the
 
 ```json
 { "type": "presence", "payload": { "source": "none", "activity": null } }
-{ "type": "state", "status": "connected|disconnected|reconnecting", "client_id": "optional Discord App ID" }
-{ "type": "current", "payload": { "source": "none", "activity": null }, "client_id": "optional Discord App ID" }
+{ "type": "state", "status": "connected|disconnected|reconnecting", "client_id": "Discord App ID" }
+{ "type": "current", "payload": { "source": "none", "activity": null }, "client_id": "Discord App ID" }
 ```
 
-`payload` on `presence` and `current` is a **presence snapshot** (see [Activity source](#activity-source)); `activity` is `null` whenever `source` is `"none"`. `client_id` (the Discord Application ID from `discord.client_id`) is included on `state` and `current` messages when configured, so clients can identify which Discord account the proxy is attached to.
+`payload` on `presence` and `current` is a **presence snapshot** (see [Activity source](#activity-source)); `activity` is `null` whenever `source` is `"none"`. `client_id` (the Discord Application ID from `discord.client_id`) is always included on `state` and `current` messages — it is required at startup (task 9.3) — so clients can identify which Discord account the proxy is attached to.
 
 **Client → Server**
 
@@ -158,7 +173,7 @@ Error frames are sent in direct response to a client message that could not be p
 
 | Code | Constant | Description |
 |------|----------|-------------|
-| `AUTH_001` | `ErrCodeUnauthorized` | WS upgrade rejected: auth enabled and token missing or invalid |
+| `AUTH_001` | `ErrCodeUnauthorized` | Auth enabled and the token is missing or invalid — WS upgrade rejected, or HTTP route answered 401 |
 | `MSG_001` | `ErrCodeInvalidMessage` | Malformed JSON, missing/unknown `type`, unknown event in `subscribe`, or any parse failure |
 | `INT_001` | `ErrCodeInternal` | Internal server error (including a recovered panic) |
 | `REQ_001` | `ErrCodePayloadTooLarge` | Request body exceeds the 1 MiB cap (HTTP 413) |
@@ -207,12 +222,12 @@ HTTP-level errors (auth failure, oversized body, rate limit, connection cap, rec
 #### Auth (Optional)
 
 - Disabled by default
-- If enabled: static token required on the WS upgrade (see the authentication handshake above)
+- If enabled: static token required on the WS upgrade (see the authentication handshake above) as well as for REST endpoints and the dashboard (`/` and `/api/*`); `/health`, `/healthz`, and `/readyz` remain unauthenticated for probes
 - Primary token source: `auth.token` in config, overridable via the `PROXY_AUTH_TOKEN` env var
-- Legacy `PROXY_TOKEN` env var is still accepted; **when set it takes precedence over both `auth.token` and `PROXY_AUTH_TOKEN`** (explicit viper `Set` beats the env binding) — it is not a true fallback. Scheduled for removal (task 9.6); use `PROXY_AUTH_TOKEN` only
+- The legacy `PROXY_TOKEN` env var was removed in task 9.6; it no longer sets `auth.token` — use `PROXY_AUTH_TOKEN` only
 - Token comparison is constant-time (`crypto/subtle`)
-- Browser clients (the dashboard) cannot set request headers; they send the token as a WebSocket subprotocol `proxy-token-<base64url(token)>` instead
-- **Known gap (deliberate in v1)**: REST/dashboard endpoints (`/`, `/api/*`, `/health*`) are NOT auth-gated in the current implementation — only the WS upgrade is. Tracked as future task 9.1.
+- Token sources, in precedence order: `Authorization: Bearer <token>` header, WebSocket subprotocol, auth cookie, `?token=` query parameter
+- Browser clients (the dashboard) cannot set request headers; they send the token as a WebSocket subprotocol `proxy-token-<base64url(token)>` instead. For HTTP navigation they may also open the dashboard once as `/?token=<token>`: a successful query-token request sets a short-lived (`15m`), `HttpOnly`, `SameSite=Strict` cookie whose value is the base64url-encoded token, so the static assets and later reloads authenticate without the token in the URL. The cookie is `Secure` only when the request itself arrived over TLS
 
 ### 4. mDNS Announcer (`internal/mdns/`)
 
@@ -250,7 +265,7 @@ server:
 
 auth:
   enabled: false
-  token: ""                  # override via PROXY_AUTH_TOKEN env (legacy PROXY_TOKEN wins if both set; removal planned — task 9.6)
+  token: ""                  # override via PROXY_AUTH_TOKEN env (legacy PROXY_TOKEN removed — task 9.6)
 
 mdns:
   enabled: true
@@ -441,7 +456,7 @@ ENTRYPOINT ["discord-proxy"]
 
 - **Read-only**: No `SET_ACTIVITY` command exposed
 - **LAN only**: Binds to `0.0.0.0` by default; restrict via firewall or `host: "127.0.0.1"` + VPN (Tailscale)
-- **Optional token auth**: Enable `auth.enabled: true` + set `PROXY_AUTH_TOKEN` for shared-secret auth on the WS upgrade; comparison is constant-time. The legacy `PROXY_TOKEN` env var currently wins when both are set (removal tracked as task 9.6). REST/dashboard endpoints are NOT auth-gated yet (tracked as task 9.1)
+- **Optional token auth**: Enable `auth.enabled: true` + set `PROXY_AUTH_TOKEN` for shared-secret auth on the WS upgrade, REST endpoints, and dashboard; comparison is constant-time. Health probes (`/health`, `/healthz`, `/readyz`) stay unauthenticated so container/k8s probes keep working. The legacy `PROXY_TOKEN` env var was removed in task 9.6 — `PROXY_AUTH_TOKEN` is the sole env source
 - **WS rate limiting**: Per-IP limiter on WS upgrades (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 10 upgrades per minute per IP); excess upgrades get HTTP 429 `REQ_002`
 - **Max WS connections**: Concurrent client cap (`server.max_ws_connections`, default 100); excess upgrades get HTTP 503 `REQ_003`
 - **Request body cap**: Requests declaring `Content-Length` over 1 MiB are rejected with HTTP 413 `REQ_001`; unknown-length (chunked) bodies are capped via `MaxBytesReader`, so any read past 1 MiB fails. The current handlers never read request bodies (all routes are read-only), so an oversized chunked body is ignored rather than rejected with 413
@@ -466,7 +481,7 @@ ENTRYPOINT ["discord-proxy"]
 
 - Write support (remote `SET_ACTIVITY` with per-device auth)
 - Multiple Discord accounts (multiple IPC connections)
-- Prometheus metrics endpoint (`/metrics`)
+- ~~Prometheus metrics endpoint (`/metrics`)~~ — implemented in v1.1 (task 10.1), see Metrics section
 - TUI dashboard (`bubbletea`)
 - System tray indicator (host machine)
 - Encrypted WS (mTLS)

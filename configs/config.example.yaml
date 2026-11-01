@@ -19,7 +19,7 @@ server:
 
 auth:
   enabled: false
-  token: ""                  # override via PROXY_AUTH_TOKEN env (legacy PROXY_TOKEN wins if both set; removal planned — task 9.6)
+  token: ""                  # override via PROXY_AUTH_TOKEN env (legacy PROXY_TOKEN removed — task 9.6)
 
 mdns:
   enabled: true
@@ -29,3 +29,6 @@ mdns:
 logging:
   level: "info"              # debug, info, warn, error
   format: "json"             # json or console
+
+metrics:
+  enabled: false             # expose Prometheus metrics on /metrics

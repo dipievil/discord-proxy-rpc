@@ -24,7 +24,7 @@ Project scaffolding, configuration, logging, platform abstraction, and build sys
 | - [x] 1.7 | `cmd/proxy/main.go` | Skeleton entry point: config load, logger, graceful shutdown | Runs, logs startup, exits cleanly on SIGTERM |
 | - [x] 1.8 | `.github/workflows/release.yml` | Semantic-release workflow on main push | Triggers on push to main, creates tag, builds binaries, draft release |
 | - [x] 1.9 | `.goreleaser.yml` | GoReleaser config: builds, archives, checksums | `goreleaser release --snapshot --clean` works |
-| - [ ] 1.10 | `Dockerfile` | Multi-stage build (builder + alpine runtime) | `docker build` produces working image; PR #46 open — tick when merged |
+| - [x] 1.10 | `Dockerfile` | Multi-stage build (builder + alpine runtime) | `docker build` produces working image — PR #46 merged 2026-10-19 |
 | - [x] 1.11 | `README.md` | Project overview, quick start, Discord app guide | Covers install, config, run, dashboard access |
 | - [x] 1.12 | `.github/workflows/ci.yml` | GitHub Actions CI: lint (`go vet`), unit tests with `-race`, build, e2e (`scripts/e2e.sh`) — renumbered from Phase 8 | CI runs on push/PR to dev+main; all four jobs green |
 
@@ -153,7 +153,7 @@ Wire everything together, hardening, documentation.
 | - [x] 7.6 | README.md | Complete: install, config, Discord app, run, dashboard, build | New user can run from scratch in <5 min |
 | - [x] 7.7 | E2E test script | `scripts/e2e.sh`: start proxy, connect mock Discord, verify WS | CI can run full stack test |
 | - [x] 7.8 | Panic recovery middleware | Wire `RecoveryMiddleware` into `Server.ServeHTTP` (was dead code) | Panicking HTTP handler returns 500 `INT_001` instead of crashing the process |
-| - [x] 7.9 | `client_id` in WS state messages | Set `Hub.ClientID` so `state`/`current` messages carry the Discord App ID | `state`/`current` frames include `client_id` when configured |
+| - [x] 7.9 | `client_id` in WS state messages | Set `Hub.ClientID` so `state`/`current` messages carry the Discord App ID | `state`/`current` frames include `client_id` (required at startup) |
 | - [x] 7.10 | Auth deduplication | Collapse `main.go` `newAuthFunc` vs `server.AuthMiddleware` into a single `BearerAuthFunc` validation path | One shared token validation path for HTTP and WS |
 | - [x] 7.11 | Health endpoint docs | Document `/healthz` and `/readyz`; reconcile the `/health` payload with the SPEC | SPEC/README endpoint tables match the implementation |
 | - [x] 7.12 | Error codes + WS error frames | Wire up the error-code constants (`AUTH_001`…`REQ_003`); reply to invalid WS messages with an `error` frame | Invalid client messages get `{type:"error",payload:{code,message}}`; no unused error constants |
@@ -176,13 +176,15 @@ Fix defects found after integration review and harden the CI pipeline.
 | ID | Task | Description | Acceptance Criteria |
 |----|------|-------------|---------------------|
 | - [x] 8.1 | Windows Discord pipe path | Return the actual Windows named-pipe path (`\\.\pipe\discord-ipc-{0..9}`) from the platform resolver | Windows build resolves a real Discord pipe path |
-| - [x] 8.2 | Bind documented auth token env | Bind `PROXY_AUTH_TOKEN` in config, keeping legacy `PROXY_TOKEN` as fallback | Documented env vars actually set `auth.token` |
-| - [ ] 8.3 | Flaky IPC healthcheck test | Fix `panic: close of nil channel` flake in the `internal/ipc` healthcheck test | `go test ./internal/ipc/... -count=1` passes repeatedly |
-| - [ ] 8.4 | Presence Start/Stop deadlock | Fix deadlock that hangs `TestConcurrentUpdateAndRead` (dev CI red) | `go test ./internal/state/... -race` green, no hangs |
+| - [x] 8.2 | Bind documented auth token env | Bind `PROXY_AUTH_TOKEN` in config, keeping legacy `PROXY_TOKEN` as fallback (historical: the legacy `PROXY_TOKEN` fallback was later removed by task 9.6) | Documented env vars actually set `auth.token` |
+| - [x] 8.3 | Flaky IPC healthcheck test | Fix `panic: close of nil channel` flake in the `internal/ipc` healthcheck test | `go test ./internal/ipc/... -count=1` passes repeatedly — PR #50 merged |
+| - [x] 8.4 | Presence Start/Stop deadlock | Fix deadlock that hangs `TestConcurrentUpdateAndRead` (dev CI red) | `go test ./internal/state/... -race` green, no hangs — PR #49 merged |
 | - [x] 8.5 | Explicit test/job timeouts | Add `timeout-minutes` to CI jobs and `-timeout` to `go test` invocations | No job can hang for the default runner timeout again |
 | - [x] 8.6 | Harden CI lint | Run real `golangci-lint` in CI (lint job only runs `go vet`; `make lint` silently skips when not installed) | `golangci-lint run` is a required CI gate — also unlocks the phase DoD lint checkbox |
-| - [ ] 8.7 | CI hygiene | Remove redundant gcc install steps, add concurrency cancellation for superseded runs | No redundant steps; in-flight runs cancelled on rapid pushes |
-| - [ ] 8.8 | Fix e2e broken-start detection | `scripts/e2e.sh` must fail when the binary does not start (port occupied / early exit) | `e2e.sh` exits non-zero on a broken start and CI verifies it (code merged via #40; Trello card still open under legacy numbering) |
+| - [x] 8.7 | CI hygiene | Remove redundant gcc install steps, add concurrency cancellation for superseded runs | No redundant steps; in-flight runs cancelled on rapid pushes — PR #52 merged |
+| - [x] 8.8 | Fix e2e broken-start detection | `scripts/e2e.sh` must fail when the binary does not start (port occupied / early exit) | `e2e.sh` exits non-zero on a broken start and CI verifies it (merged via #40 and #48) |
+| - [x] 8.9 | Release process + Conventional Commits docs | Document the semantic-release flow and require Conventional Commit squash-merge PR titles so version bumps are computed automatically | `docs/` covers tagging/release; AGENTS + README state the PR-title requirement — PR #43 merged 2026-10-18 |
+| - [ ] 8.10 | Codex review fixes on the dev → main PR (#44) | (a) hub sends a **state snapshot** when a WS client subscribes, so the dashboard no longer shows `connected` while `/api/state` says `disconnected`; (b) with `discord.auto_reconnect=false` the IPC loop emits a **terminal `disconnected`** state instead of staying on `reconnecting` | Subscribing a client receives the current state; `auto_reconnect=false` + closed IPC socket ends in a `disconnected` broadcast — **no PR yet**, card #94 in To-do |
 | - [x] 8.11 | Activity-feed contract (Codex P1 on #44) | Discord IPC cannot observe another application's Rich Presence, so the presence contract must say so: add an explicit `source: "none"` state to `/api/presence`, WS `presence`/`current` and the dashboard, and ship `cmd/ipc-capture` to prove the limitation on a host | Snapshots carry `{"source":"none\|ipc","activity":Activity\|null}`; an empty feed is never indistinguishable from "no source"; SPEC/README/AGENTS revised; unit tests green |
 
 > Note: the GitHub Actions CI task was renumbered from Phase 8 to **1.12** and lives in Phase 1 (card in Done).
@@ -198,12 +200,12 @@ Close the remaining security gaps and cut the first public release.
 
 | ID | Task | Description | Acceptance Criteria |
 |----|------|-------------|---------------------|
-| [ ] 9.1 | REST/dashboard auth coverage | Extend token auth beyond the WS upgrade to `/` and `/api/*` (decide for `/health*`) | With `auth.enabled: true`, sensitive endpoints reject unauthenticated requests |
-| [ ] 9.2 | Rate-limit REST/dashboard endpoints | Apply the per-IP rate limiter to HTTP routes, not only WS upgrades | Abuse of REST endpoints is throttled with 429 |
-| [ ] 9.3 | Fail fast on missing `discord.client_id` | Refuse to start with a clear error when `discord.client_id` is empty | Misconfigured runs abort at startup instead of silently flapping |
-| [ ] 9.4 | Cut first release | Merge `dev` → `main`, tag `v0.1.0`, publish release binaries | v0.1.0 published with binaries for all platforms |
-| [ ] 9.5 | Branch protection + required review | Protect `main`/`dev`: require PR + green CI + at least 1 review | Direct pushes blocked; CI required to merge |
-| [ ] 9.6 | Remove legacy `PROXY_TOKEN` env var | Drop the `PROXY_TOKEN` override in `internal/config/config.go` (`setupEnv`); bind `auth.token` to `PROXY_AUTH_TOKEN` only; update `TestProxyTokenEnvVar` in `config_test.go` and all docs mentioning the legacy var (SPEC §Auth, README, `configs/config.example.yaml`). Currently `PROXY_TOKEN` wins over `PROXY_AUTH_TOKEN` when both are set — a migration footgun | `PROXY_TOKEN` is ignored; `PROXY_AUTH_TOKEN` is the sole env source; released as a breaking change (`feat!:` + `BREAKING CHANGE` footer) |
+| [x] 9.1 | REST/dashboard auth coverage | Extend token auth beyond the WS upgrade to `/` and `/api/*` (health probes stay open for k8s) | With `auth.enabled: true`, sensitive endpoints reject unauthenticated requests |
+| [ ] 9.2 | Rate-limit REST/dashboard endpoints | Apply the per-IP rate limiter to HTTP routes, not only WS upgrades | Abuse of REST endpoints is throttled with 429 — **no PR yet**, card #86 in To-do (dependency 9.1 merged via PR #55) |
+| [x] 9.3 | Fail fast on missing `discord.client_id` | Refuse to start with a clear error when `discord.client_id` is empty | Misconfigured runs abort at startup instead of silently flapping — PRs #54 and #63 merged |
+| [ ] 9.4 | Cut first release | Merge `dev` → `main`, tag `v0.1.0`, publish release binaries | PR #44 merged 2026-10-21 and semantic-release pushed tag `v1.0.0`, but the Release workflow failed on the darwin/amd64 cross-compile (`golang.org/x/net` → `invalid reference to syscall.recvmsg`) and skipped `Create Draft Release`, so **no GitHub Release exists yet** — card #84 in To-do; fix is bumping `golang.org/x/net` and re-running the release workflow |
+| [x] 9.5 | Branch protection + required review | Protect `main`/`dev`: require PR + green CI (Lint, Test, Build, E2E Tests, strict); `dev` needs 1 approving review with admin bypass (`enforce_admins: false`), `main` enforces admins with 0 required approvals — the sole repo account cannot self-approve its own PR, so requiring 1 review there would block every merge | Direct pushes to `main` blocked even for admins; CI required to merge both branches; `dev` admin may still merge — PR #61 merged |
+| [x] 9.6 | Remove legacy `PROXY_TOKEN` env var | Drop the `PROXY_TOKEN` override in `internal/config/config.go` (`setupEnv`); bind `auth.token` to `PROXY_AUTH_TOKEN` only; update `TestProxyTokenEnvVar` in `config_test.go` and all docs mentioning the legacy var (SPEC §Auth, README, `configs/config.example.yaml`). Previously `PROXY_TOKEN` won over `PROXY_AUTH_TOKEN` when both were set — a migration footgun | `PROXY_TOKEN` is ignored; `PROXY_AUTH_TOKEN` is the sole env source; released as a breaking change (`feat!:` + `BREAKING CHANGE` footer) |
 
 ---
 
@@ -216,11 +218,36 @@ Post-v0.1 extensions; out of scope for the first release.
 
 | ID | Task | Description | Acceptance Criteria |
 |----|------|-------------|---------------------|
-| [ ] 10.1 | Prometheus `/metrics` | Expose presence updates, WS client count, IPC state as Prometheus metrics | `/metrics` is scrapable by a Prometheus server |
-| [ ] 10.2 | TUI dashboard | Terminal UI (bubbletea) mirroring the web dashboard | Runs from the binary/flag and renders live presence |
-| [ ] 10.3 | System tray indicator | Tray icon on the host machine showing Discord connection state | Icon reflects connected/disconnected in real time |
-| [ ] 10.4 | Client SDK / CLI example | Reference client (Go lib + CLI) for LAN consumers | Example app consumes the WS API in <20 lines |
-| [ ] 10.5 | mDNS browse/discovery helper | CLI helper to browse `_discord-proxy._tcp` and print endpoints | Helper prints host:port of running proxies on the LAN |
+| [x] 10.1 | Prometheus `/metrics` | Expose presence updates, WS client count, IPC state as Prometheus metrics | `/metrics` is scrapable by a Prometheus server — PR #59 merged |
+| [x] 10.2 | TUI dashboard | Terminal UI (bubbletea) mirroring the web dashboard | Runs from the binary/flag and renders live presence — PR #62 merged 2026-10-28 |
+| [ ] 10.3 | System tray indicator | Tray icon on the host machine showing Discord connection state | Icon reflects connected/disconnected in real time — **no PR yet**, card #91 in To-do |
+| [x] 10.4 | Client SDK / CLI example | Reference client (Go lib + CLI) for LAN consumers | Example app consumes the WS API in <20 lines — PR #58 merged |
+| [ ] 10.5 | mDNS browse/discovery helper | CLI helper to browse `_discord-proxy._tcp` and print endpoints | Helper prints host:port of running proxies on the LAN — PR #60 open, card #93 in Code Review |
+
+#### Task 10.4 — implementation notes
+
+Delivered as `examples/consumer/` (CLI), not a full SDK library — the smallest deliverable meeting the acceptance criteria and matching the Trello card wording ("SDK/CLI example consumer"). Decisions:
+
+- **Copy-pasteability**: the example duplicates the tiny wire-protocol structs (server message envelope + error payload) instead of importing `internal/server`, so a LAN consumer can paste it into any Go project. `pkg/types` (public module path) is the only repo import, used for activity payloads.
+- **Default `-addr` is `ws://127.0.0.1:8765/ws`** — the server's actual default (`server.port: 8765`, `server.ws_path: /ws`), not `ws://127.0.0.1:8080/ws` as originally sketched, so the example works out of the box.
+- **Auth is `Authorization: Bearer <token>` only**: the server (`internal/server/auth.go`) accepts a bearer header or the browser-only `proxy-token-<base64url>` subprotocol; there is **no `?token=` query-param auth** on the upgrade (the dashboard's `?token=` is consumed client-side and stored in `sessionStorage`). The example uses the header.
+- **Behaviour**: subscribes to `presence`/`state`/`current`, sends `get_current` on connect for an immediate snapshot, answers server pings, reconnects with exponential backoff (1s→30s, reset after a successful session), exits cleanly on SIGINT/SIGTERM.
+- **Payload contract**: presence/current payloads are the post-#56 `types.PresenceSnapshot` envelope (`{source, activity}`); the example prints the `source` so "no activity source" (`activity: null`, `source: "none"`) is visibly distinct from a cleared activity.
+
+---
+
+## Phase 11: Future extensions [v1.2+]
+
+### Goal
+The remaining SPEC "Future Extensions" not covered by Phase 10. Only 11.1 is queued for work (To-do, within the 5-card cap); 11.2 and 11.3 wait in Backlog, with 11.3 blocked on an explicit remote-write security decision.
+
+### Tasks
+
+| ID | Task | Description | Acceptance Criteria |
+|----|------|-------------|---------------------|
+| [ ] 11.1 | Encrypted WS (mTLS) | Allow LAN clients to connect over TLS with mutual authentication instead of the shared bearer token | `config.server.tls.*` with a documented env/YAML surface; `/ws` rejects clients without a valid client certificate when mTLS is on; bearer auth and mTLS are mutually exclusive (fail fast); README + SPEC security section updated; unit tests for the TLS listener and the config validation — card #97 in To-do |
+| [ ] 11.2 | Multiple Discord accounts | Track several `discord-ipc-*` sockets (one per logged-in account) and expose the per-account presence | Presence/state carries the account identity so `/api/presence`, WS `presence`/`current` and the dashboard never mix accounts; the dashboard shows one panel per account; unit tests for multi-socket connect/reconnect — card #98 in Backlog |
+| [ ] 11.3 | Write support (remote `SET_ACTIVITY`) | Expose `SET_ACTIVITY` behind an explicit opt-in flag and per-device auth, turning the proxy from read-only into remote-write | New WS/API message and error codes defined; SPEC security posture revised (it is "read-only" today) with the new remote-write surface in the threat model; e2e coverage — card #99 in Backlog, largest/riskiest item, needs a security decision first |
 
 ---
 
@@ -238,12 +265,14 @@ Phase 1 (Foundation)
                         └──→ Phase 8 (Post-review bugfix & CI hardening)
                                 └──→ Phase 9 (Hardening & release)
                                         └──→ Phase 10 (Future extensions, v1.1)
+                                                └──→ Phase 11 (Future extensions, v1.2+)
 ```
 
 - Phase 1 must complete first
 - Phases 2-6 can proceed in parallel after Phase 1
 - Phase 7 requires all prior phases
 - Phase 8 fixes defects found in Phases 1-7; Phase 9 gates the first release; Phase 10 is out of scope for v0.1
+- Phase 11 follows Phase 10 and needs an explicit security decision for 11.3 (remote write)
 
 ---
 
@@ -291,7 +320,8 @@ Phase 1 (Foundation)
 
 ## Next Steps
 
-1. **Phases 1-7 are complete and merged on `dev`** — all Trello cards are in Done (including 1.12 = CI workflow)
-2. Clear the open Phase 8 bugs: flaky IPC healthcheck test (8.3) and the presence Start/Stop deadlock (8.4) to get dev CI fully green
-3. Harden CI: explicit test/job timeouts (8.5), real `golangci-lint` gate (8.6), CI hygiene (8.7) — 8.6 also unlocks the per-phase "Definition of Done" lint checkbox
-4. Then Phase 9: REST/dashboard auth (9.1/9.2), fail-fast `discord.client_id` (9.3), cut v0.1.0 (9.4) and set up branch protection (9.5)
+1. **Phases 1-7 and most of Phase 8 are complete and merged on `dev`** — every finished card is in Done and mapped to a merged PR; Phase 9.1/9.3/9.5/9.6 and Phase 10.1/10.2/10.4 are merged too
+2. Finish Phase 8: 8.10 (WS state snapshot on subscribe + terminal `disconnected` when `auto_reconnect=false`) — card #94 in To-do, no PR yet
+3. Close Phase 9: 9.2 (rate-limit REST/dashboard routes, now unblocked by 9.1) and 9.4 (bump `golang.org/x/net`, re-run the release workflow so the `v1.0.0` tag finally produces a GitHub Release)
+4. Phase 10 leftover: 10.5 is under review (PR #60 — CI green, mergeable, awaiting review), 10.3 (system tray) is queued in To-do
+5. Phase 11.1 (mTLS) is the next queued story; 11.2 and 11.3 stay in Backlog — 11.3 needs a security decision on remote write
