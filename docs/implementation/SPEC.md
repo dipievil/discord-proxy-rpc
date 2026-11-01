@@ -237,6 +237,21 @@ HTTP-level errors (auth failure, oversized body, rate limit, connection cap, rec
 - Instance name: configurable (default: hostname)
 - Cleanup on graceful shutdown
 
+### 4.1 Discovery Helper (`cmd/discover/`)
+
+Client-side counterpart of the announcer: browses `_discord-proxy._tcp.local` and prints the endpoints it finds. Run it with `make discover` or `go run`; release archives also ship it as the `discover` binary.
+
+```bash
+go run ./cmd/discover -timeout 5s        # table
+go run ./cmd/discover -timeout 5s -json  # {"count":N,"proxies":[...]}
+```
+
+- Columns: instance, host, addresses, port, TXT. Addresses are the dialable ones; link-local IPv6 addresses are counted as `(+N link-local)` in the table and kept in the `link_local` JSON field, because they need a zone to be usable.
+- Results are deduplicated on instance/host/port, merging addresses and TXT records, and sorted by instance name for stable output.
+- Table cells are sanitized (control characters replaced) so an unauthenticated mDNS announcement cannot inject ANSI escapes or extra columns; JSON output keeps the raw values.
+- `-timeout` must be positive (a browse without a deadline would never end).
+- Exit codes: `0` success — **including "no proxies found"**, `1` browse or write failure, `2` usage error (e.g. `-timeout 0`). Scripts must parse the output, not the exit code, to tell an empty LAN from a populated one.
+
 ### 5. Config (`internal/config/`)
 
 - **Library**: `github.com/spf13/viper`
@@ -306,8 +321,10 @@ discord-proxy-rpc/
 ├── cmd/
 │   ├── proxy/
 │   │   └── main.go           # Entry point, wiring, signal handling
-│   └── ipc-capture/
-│       └── main.go           # Capture harness: records raw Discord IPC frames
+│   ├── ipc-capture/
+│   │   └── main.go           # Capture harness: records raw Discord IPC frames
+│   └── discover/
+│       └── main.go           # Discovery helper: browses the LAN for proxies via mDNS
 ├── internal/
 │   ├── config/
 │   │   └── config.go

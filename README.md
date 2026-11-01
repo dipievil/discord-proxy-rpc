@@ -79,6 +79,17 @@ go run ./cmd/ipc-capture -client-id <your-discord-app-id> -duration 60s -out cap
 
 The summary ends with `No ACTIVITY frame was observed…` (confirming the limitation) or `Found N ACTIVITY frame(s)…`. If a source does exist on your setup, share `capture.jsonl` so the `ACTIVITY` frame can be wired in.
 
+### Finding proxies on the LAN (discovery helper)
+
+`cmd/discover` browses for the proxy's mDNS advertisement (`_discord-proxy._tcp.local`) and prints the endpoints it finds:
+
+```bash
+go run ./cmd/discover -timeout 5s        # table of instance, host, address, port, TXT
+go run ./cmd/discover -timeout 5s -json  # machine-readable: {"count":N,"proxies":[...]}
+```
+
+Link-local IPv6 addresses are shown as a count (`(+N link-local)`) because they need a zone to be dialable; the JSON output carries them in `link_local`. The helper exits `0` even when nothing is found — parse the output, not the exit status, to tell an empty LAN from a populated one. `1` means the browse or the write failed, `2` a usage error such as a non-positive `-timeout`.
+
 ---
 
 ## Architecture
@@ -541,6 +552,7 @@ The `-token` flag is only needed when the proxy runs with `auth.enabled: true`; 
 | `make clean` | Remove build artifacts |
 | `make e2e` | Run end-to-end tests (requires GCC for race detector) |
 | `make capture` | Record raw Discord IPC frames (`CLIENT_ID=... [DURATION=60s] [OUT=capture.jsonl]`) |
+| `make discover` | Browse the LAN for running proxies (`[TIMEOUT=5s] [JSON=1]`) |
 
 ### Release process
 
