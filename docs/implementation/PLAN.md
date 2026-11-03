@@ -203,7 +203,7 @@ Close the remaining security gaps and cut the first public release.
 | [x] 9.1 | REST/dashboard auth coverage | Extend token auth beyond the WS upgrade to `/` and `/api/*` (health probes stay open for k8s) | With `auth.enabled: true`, sensitive endpoints reject unauthenticated requests |
 | [ ] 9.2 | Rate-limit REST/dashboard endpoints | Apply the per-IP rate limiter to HTTP routes, not only WS upgrades | Abuse of REST endpoints is throttled with 429 — **no PR yet**, card #86 in To-do (dependency 9.1 merged via PR #55) |
 | [x] 9.3 | Fail fast on missing `discord.client_id` | Refuse to start with a clear error when `discord.client_id` is empty | Misconfigured runs abort at startup instead of silently flapping — PRs #54 and #63 merged |
-| [ ] 9.4 | Cut first release | Merge `dev` → `main`, tag `v0.1.0`, publish release binaries | PR #44 merged 2026-10-21 and semantic-release pushed tag `v1.0.0`, but the Release workflow failed on the darwin/amd64 cross-compile (`golang.org/x/net` → `invalid reference to syscall.recvmsg`) and skipped `Create Draft Release`, so **no GitHub Release exists yet** — card #84 in To-do; fix is bumping `golang.org/x/net` and re-running the release workflow |
+| [ ] 9.4 | Cut first release | Merge `dev` → `main`, tag a release, publish release binaries | PR #64 (dev → main) merged 2026-11-01 made Release run 41353406368 fully green (5 builds + Create Draft Release) and semantic-release pushed tag `v2.0.0`, but the GitHub Release is still a **DRAFT** (`draft: true`, no publishedAt): `/releases` is empty for anonymous users and nothing is downloadable. No workflow step ever publishes the draft. Also open: README release/clone URLs point to the nonexistent `github.com/discord-proxy-rpc/...` repo, `cmd/proxy` has no `version`/`--version` so CI binaries are unstamped, and CI uploads raw binaries with no checksums while `.goreleaser.yml` only runs locally. The `v1.0.0` tag has no release at all — card #84 in To-do |
 | [x] 9.5 | Branch protection + required review | Protect `main`/`dev`: require PR + green CI (Lint, Test, Build, E2E Tests, strict); `dev` needs 1 approving review with admin bypass (`enforce_admins: false`), `main` enforces admins with 0 required approvals — the sole repo account cannot self-approve its own PR, so requiring 1 review there would block every merge | Direct pushes to `main` blocked even for admins; CI required to merge both branches; `dev` admin may still merge — PR #61 merged |
 | [x] 9.6 | Remove legacy `PROXY_TOKEN` env var | Drop the `PROXY_TOKEN` override in `internal/config/config.go` (`setupEnv`); bind `auth.token` to `PROXY_AUTH_TOKEN` only; update `TestProxyTokenEnvVar` in `config_test.go` and all docs mentioning the legacy var (SPEC §Auth, README, `configs/config.example.yaml`). Previously `PROXY_TOKEN` won over `PROXY_AUTH_TOKEN` when both were set — a migration footgun | `PROXY_TOKEN` is ignored; `PROXY_AUTH_TOKEN` is the sole env source; released as a breaking change (`feat!:` + `BREAKING CHANGE` footer) |
 
@@ -222,7 +222,7 @@ Post-v0.1 extensions; out of scope for the first release.
 | [x] 10.2 | TUI dashboard | Terminal UI (bubbletea) mirroring the web dashboard | Runs from the binary/flag and renders live presence — PR #62 merged 2026-10-28 |
 | [ ] 10.3 | System tray indicator | Tray icon on the host machine showing Discord connection state | Icon reflects connected/disconnected in real time — **no PR yet**, card #91 in To-do |
 | [x] 10.4 | Client SDK / CLI example | Reference client (Go lib + CLI) for LAN consumers | Example app consumes the WS API in <20 lines — PR #58 merged |
-| [ ] 10.5 | mDNS browse/discovery helper | CLI helper to browse `_discord-proxy._tcp` and print endpoints | Helper prints host:port of running proxies on the LAN — PR #60 open, card #93 in Code Review |
+| [x] 10.5 | mDNS browse/discovery helper | CLI helper to browse `_discord-proxy._tcp` and print endpoints | Helper prints host:port of running proxies on the LAN — PR #60 merged 2026-11-01, card #93 in Done |
 
 #### Task 10.4 — implementation notes
 
@@ -251,6 +251,19 @@ The remaining SPEC "Future Extensions" not covered by Phase 10. Only 11.1 is que
 
 ---
 
+## Phase 12: Documentation & onboarding
+
+### Goal
+Make the first-run experience approachable for newcomers.
+
+### Tasks
+
+| ID | Task | Description | Acceptance Criteria |
+|----|------|-------------|---------------------|
+| - [ ] 12.1 | Split README for newbies | Split the README into a short newcomer path (install → configure → run → open the dashboard) and move the deep reference material into separate docs | A new user can get the proxy running from the short path without reading the reference sections — card #100 in Backlog (card description still empty) |
+
+---
+
 ## Dependencies Between Phases
 
 ```
@@ -273,6 +286,7 @@ Phase 1 (Foundation)
 - Phase 7 requires all prior phases
 - Phase 8 fixes defects found in Phases 1-7; Phase 9 gates the first release; Phase 10 is out of scope for v0.1
 - Phase 11 follows Phase 10 and needs an explicit security decision for 11.3 (remote write)
+- Phase 12 is documentation work and can run independently of Phases 10-11
 
 ---
 
@@ -291,7 +305,7 @@ Phase 1 (Foundation)
 
 *Assumes part-time (2-3h/day). Full-time could be ~1.5 weeks.*
 
-*Timeline covers Phases 1-7 (v0.1 core). Phases 8-10 are tracked incrementally on the Trello board.*
+*Timeline covers Phases 1-7 (v0.1 core). Phases 8-12 are tracked incrementally on the Trello board.*
 
 ---
 
@@ -320,8 +334,9 @@ Phase 1 (Foundation)
 
 ## Next Steps
 
-1. **Phases 1-7 and most of Phase 8 are complete and merged on `dev`** — every finished card is in Done and mapped to a merged PR; Phase 9.1/9.3/9.5/9.6 and Phase 10.1/10.2/10.4 are merged too
+1. **Phases 1-7 and most of Phase 8 are complete and merged on `dev`** — every finished card is in Done and mapped to a merged PR; Phase 9.1/9.3/9.5/9.6 and Phase 10.1/10.2/10.4/10.5 are merged too
 2. Finish Phase 8: 8.10 (WS state snapshot on subscribe + terminal `disconnected` when `auto_reconnect=false`) — card #94 in To-do, no PR yet
-3. Close Phase 9: 9.2 (rate-limit REST/dashboard routes, now unblocked by 9.1) and 9.4 (bump `golang.org/x/net`, re-run the release workflow so the `v1.0.0` tag finally produces a GitHub Release)
-4. Phase 10 leftover: 10.5 is under review (PR #60 — CI green, mergeable, awaiting review), 10.3 (system tray) is queued in To-do
+3. Close Phase 9: 9.2 (rate-limit REST/dashboard routes, now unblocked by 9.1) and 9.4 (publish the draft `v2.0.0` release, fix the README repo URLs and the binary version stamping)
+4. Phase 10 leftover: 10.3 (system tray) is queued in To-do; 10.5 is merged (PR #60) and in Done
 5. Phase 11.1 (mTLS) is the next queued story; 11.2 and 11.3 stay in Backlog — 11.3 needs a security decision on remote write
+6. Phase 12.1 (split the README for newcomers) is a new story in Backlog, card #100
