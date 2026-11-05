@@ -42,11 +42,11 @@ type stateSnapshotRequest struct {
 }
 
 type Hub struct {
-	clients     map[string]*Client
-	mu          sync.RWMutex
-	register    chan *Client
-	unregister  chan *Client
-	broadcast   chan ServerMessage
+	clients    map[string]*Client
+	mu         sync.RWMutex
+	register   chan *Client
+	unregister chan *Client
+	broadcast  chan ServerMessage
 	// stateSnapshots answers state subscriptions from the fan-out loop, so a
 	// snapshot is ordered against state broadcasts.
 	stateSnapshots     chan stateSnapshotRequest
