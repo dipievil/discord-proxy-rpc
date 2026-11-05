@@ -51,7 +51,21 @@ func (rl *RateLimiter) Stop() {
 	<-rl.done
 }
 
+// Enabled reports whether the limiter enforces a limit. A nil limiter and a
+// non-positive rate or window all disable limiting: with no window an entry
+// would expire immediately, and with a non-positive rate the limiter would
+// reject every request after the first instead of allowing a budget. This
+// matches the pre-9.2 WebSocket behaviour and keeps a disabled limiter from
+// rejecting anything.
+func (rl *RateLimiter) Enabled() bool {
+	return rl != nil && rl.rate > 0 && rl.window > 0
+}
+
 func (rl *RateLimiter) Allow(ip string) bool {
+	if !rl.Enabled() {
+		return true
+	}
+
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
@@ -69,6 +83,29 @@ func (rl *RateLimiter) Allow(ip string) bool {
 	v.count++
 	v.lastSeen = time.Now()
 	return true
+}
+
+// RetryAfter reports how long the IP must wait before its current window
+// expires and requests are allowed again. It returns zero when the limiter is
+// disabled or the window has already elapsed.
+func (rl *RateLimiter) RetryAfter(ip string) time.Duration {
+	if !rl.Enabled() {
+		return 0
+	}
+
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	v, ok := rl.visitors[ip]
+	if !ok {
+		return rl.window
+	}
+
+	remaining := rl.window - time.Since(v.lastSeen)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 // Rejections reports how many requests Allow has denied since creation. It

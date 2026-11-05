@@ -5,8 +5,11 @@ import (
 	"html"
 	"io"
 	"io/fs"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -99,12 +102,14 @@ func NewServer(hub *Hub, logger *zap.Logger, opts ...ServerOption) *Server {
 }
 
 func (s *Server) registerRoutes() {
-	s.mux.HandleFunc("/", s.requireAuth(s.handleDashboard, false))
-	s.mux.HandleFunc(s.wsPath, s.rateLimitWS(s.wsHandler.ServeHTTP))
-	s.mux.HandleFunc("/api/presence", s.requireAuth(s.handlePresence, true))
-	s.mux.HandleFunc("/api/state", s.requireAuth(s.handleState, true))
+	s.mux.HandleFunc("/", s.rateLimit(s.requireAuth(s.handleDashboard, false)))
+	s.mux.HandleFunc(s.wsPath, s.rateLimit(s.wsHandler.ServeHTTP))
+	s.mux.HandleFunc("/api/presence", s.rateLimit(s.requireAuth(s.handlePresence, true)))
+	s.mux.HandleFunc("/api/state", s.rateLimit(s.requireAuth(s.handleState, true)))
 	// Health endpoints stay open on purpose: they are consumed by container
-	// and Kubernetes probes, which cannot carry the bearer token.
+	// and Kubernetes probes, which cannot carry the bearer token. /metrics is
+	// exempt for Prometheus scrapes that may run without credentials. Both are
+	// never subject to the per-IP HTTP rate limit.
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/readyz", s.handleReadyz)
@@ -179,22 +184,46 @@ func (s *Server) Close() {
 	}
 }
 
-func (s *Server) rateLimitWS(next http.HandlerFunc) http.HandlerFunc {
+// rateLimit applies the shared per-IP rate limiter to a data route: the
+// dashboard (and its static assets), the REST endpoints and the WebSocket
+// upgrade all draw from one budget per client, so switching surfaces never
+// bypasses the limit. It wraps authentication rather than the reverse, so an
+// unauthenticated flood is rejected before the token check; because the budget
+// is keyed by IP, a 401/429 distinction never reveals whether a token is valid.
+//
+// Health probes and /metrics are registered without this middleware so they
+// keep answering while a client is rate limited.
+func (s *Server) rateLimit(next http.HandlerFunc) http.HandlerFunc {
+	if !s.rateLimiter.Enabled() {
+		return next
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.rateLimiter != nil {
-			ip := extractIP(r.RemoteAddr)
-			if !s.rateLimiter.Allow(ip) {
-				s.logger.Warn("WebSocket upgrade rate limited",
-					zap.String("ip", ip),
-					zap.String("remote", r.RemoteAddr),
-				)
-				writeAPIError(w, s.logger, http.StatusTooManyRequests,
-					ErrCodeRateLimited, "rate limit exceeded")
-				return
-			}
+		ip := extractIP(r.RemoteAddr)
+		if !s.rateLimiter.Allow(ip) {
+			retryAfter := s.rateLimiter.RetryAfter(ip)
+			s.logger.Warn("request rate limited",
+				zap.String("ip", ip),
+				zap.String("path", r.URL.Path),
+				zap.Duration("retry_after", retryAfter),
+			)
+			w.Header().Set("Retry-After", retryAfterSeconds(retryAfter))
+			writeAPIError(w, s.logger, http.StatusTooManyRequests,
+				ErrCodeRateLimited, "rate limit exceeded")
+			return
 		}
 		next(w, r)
 	}
+}
+
+// retryAfterSeconds renders a Retry-After delay in whole seconds, rounding up
+// and never below one so a client always waits at least a second.
+func retryAfterSeconds(d time.Duration) string {
+	seconds := int(math.Ceil(d.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	return strconv.Itoa(seconds)
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
