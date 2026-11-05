@@ -65,6 +65,7 @@ func TestDefaults(t *testing.T) {
 	}
 	if len(cfg.Server.TrustedProxies) != 0 {
 		t.Errorf("server.trusted_proxies = %v, want empty (RemoteAddr only)", cfg.Server.TrustedProxies)
+	}
 	if cfg.Server.TLS.Enabled {
 		t.Error("server.tls.enabled = true, want false")
 	}

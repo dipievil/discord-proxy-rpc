@@ -358,6 +358,8 @@ wscat -c wss://proxy.local:8765/ws --ca ca.crt --cert client.crt --key client.ke
 
 The client certificate must carry the `clientAuth` extended key usage; a certificate issued only for `serverAuth` is rejected.
 
+**Bundled clients:** the dashboard picks `wss://` from the page scheme automatically. The TUI (`-addr`) and the example consumer accept a `wss://` URL, but they verify with the system trust store and have no option to present a client certificate, so they work with server-side TLS only — use `curl`/`wscat` or an external client for mTLS.
+
 **mDNS:** DNS-SD has no scheme field, so when TLS is on the advertised TXT record gains `tls=server` or `tls=mtls` (alongside `v=1`). Discovery clients must treat those instances as `https`/`wss`; without the key the endpoint is plain `http`/`ws`. The announce still carries only the API version and mode — no tokens, hostnames or certificate material.
 
 ---
@@ -447,6 +449,7 @@ PROXY_HOST=192.168.0.103 PROXY_PORT=8765 PROXY_AUTH_TOKEN=<your-token> bin/disco
 **Rate limiting:** the per-IP limiter (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 60 requests per minute) covers the dashboard and its static assets, `/api/presence`, `/api/state` and the WebSocket upgrade. All of them share one budget per client IP, and the check runs before auth, so a flood is rejected before the token comparison. A request over the limit gets HTTP 429 with a `Retry-After` header carrying the remaining seconds of the window and `Cache-Control: no-store` so a cached asset response cannot replay the rejection; REST and WebSocket routes answer the `REQ_002` JSON envelope, while the dashboard answers plain text because the browser renders that body directly. The first rejection from an IP in a window is logged at warning level and later ones at debug, so a reconnecting tab cannot flood the log; `discord_proxy_rate_limit_rejections_total` carries the exact count. `/health`, `/healthz`, `/readyz` and `/metrics` are exempt so container probes and Prometheus scrapes keep answering while an IP is limited. Setting `server.rate_limit_per_ip` to `0` or a negative value disables limiting (a non-positive window does too). A dashboard page load costs four requests (HTML, CSS, JS and the WebSocket upgrade), so the default budget covers several reloads and reconnect attempts from one IP.
 
 **Behind a reverse proxy or ingress:** the limiter keys on the TCP peer by default. With a proxy in front, every client would share the proxy's budget, so list the proxy's addresses in `server.trusted_proxies` (CIDR blocks, e.g. `["10.0.0.0/8"]`); the last `X-Forwarded-For` hop that is not itself trusted then becomes the client. An empty list ignores forwarding headers entirely, so a client cannot forge its identity by sending one.
+
 With `server.tls.client_ca_file` set (mTLS), every route, health probes included, requires a client certificate; unauthenticated access is impossible because the TLS handshake fails first. With server-side TLS only, the bearer-token rules above apply unchanged, over HTTPS. Bearer auth and mTLS cannot be combined.
 
 #### Kubernetes Probes

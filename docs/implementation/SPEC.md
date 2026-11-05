@@ -137,6 +137,7 @@ When `metrics.enabled: true`, the server registers `/metrics` (Prometheus text f
 **Rate limiting:** a single per-IP limiter (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 60 requests per minute) guards the dashboard and its static assets, `/api/presence`, `/api/state` and the WebSocket upgrade; all routes share one budget per IP. The middleware runs before auth so unauthenticated floods are rejected without the constant-time token comparison. Rejections answer HTTP 429 with a `Retry-After` header in whole seconds and `Cache-Control: no-store`; REST and WS routes carry the `REQ_002` envelope, while the dashboard answers plain text for direct rendering in the tab. A rejection increments `discord_proxy_rate_limit_rejections_total`; the first rejection per IP per window is logged at warning level and later ones at debug, so a reconnect loop cannot flood the log. `/health`, `/healthz`, `/readyz` and `/metrics` are deliberately registered without the middleware: probes and Prometheus scrapes must keep working while an IP is limited, and they are not useful amplification targets. A limiter that is `nil` or has a non-positive rate or window is disabled. The default budget covers a dashboard load, which costs four requests (HTML, CSS, JS and the WS upgrade), plus several reloads and reconnect attempts.
 
 **Client identity:** the limiter keys on the TCP peer (`RemoteAddr`) by default. `server.trusted_proxies` lists CIDR blocks whose `X-Forwarded-For` is honoured; when the peer is trusted the limiter takes the last hop that is not itself trusted, so clients behind an ingress keep separate budgets and an untrusted client cannot forge its IP. An empty list ignores forwarding headers entirely.
+
 #### TLS / mTLS (v1.2, task 11.1)
 
 One listener serves every route above — dashboard, REST, `/ws`, `/metrics` and the health probes — so enabling TLS changes the scheme for all of them at once (`https`/`wss`).
@@ -528,7 +529,7 @@ ENTRYPOINT ["discord-proxy"]
 | A config mistake silently serving plaintext or skipping client verification | Fail-fast validation (cert settings without `enabled`, missing cert/key, unreadable or invalid PEM, mTLS + bearer auth) plus the WS handler's `r.TLS.PeerCertificates` check |
 | A probe route bypassing transport auth | Health probes stay unauthenticated but are TLS-only and, under mTLS, require a client certificate too |
 
-Out of scope: the local Discord IPC socket never leaves the host; private-key protection depends on filesystem permissions; there is no CRL/OCSP check (revocation means editing the client CA bundle and restarting); mTLS authenticates but does not authorise per client — any certificate from the CA can read all presence data, so issue client certificates narrowly.
+Out of scope: the local Discord IPC socket never leaves the host; private-key protection depends on filesystem permissions; there is no CRL/OCSP check (revocation means editing the client CA bundle and restarting); mTLS authenticates but does not authorise per client — any certificate from the CA can read all presence data, so issue client certificates narrowly. The dashboard follows the page scheme (`wss://`), but the TUI and the example consumer only verify with the system trust store and cannot present a client certificate, so mTLS clients are external tools (`curl`, `wscat`, Node, Go).
 
 ---
 
