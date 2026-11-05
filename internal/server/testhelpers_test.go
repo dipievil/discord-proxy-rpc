@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -57,7 +58,9 @@ func testWrite(t *testing.T, conn *websocket.Conn, msg any) {
 // testSubscribe subscribes conn to the given events and returns only once the
 // server has processed the message. ReadPump handles client messages in order,
 // so a get_current round-trip after the subscribe is a deterministic ack —
-// sleeping for a fixed interval would be racy under -race.
+// sleeping for a fixed interval would be racy under -race. A state
+// subscription is answered with the current state snapshot, which is consumed
+// here so callers only observe broadcasts.
 func testSubscribe(t *testing.T, conn *websocket.Conn, events []string) {
 	t.Helper()
 	subMsg, err := NewSubscribeMessage(events)
@@ -66,6 +69,11 @@ func testSubscribe(t *testing.T, conn *websocket.Conn, events []string) {
 	}
 	testWrite(t, conn, subMsg)
 	testRequestCurrent(t, conn)
+	if slices.Contains(events, MsgTypeState) {
+		if snapshot := testRead(t, conn); snapshot.Type != MsgTypeState {
+			t.Fatalf("state snapshot: type = %q, want %q", snapshot.Type, MsgTypeState)
+		}
+	}
 	if ack := testRead(t, conn); ack.Type != MsgTypeCurrent {
 		t.Fatalf("subscribe ack: type = %q, want %q", ack.Type, MsgTypeCurrent)
 	}
