@@ -143,15 +143,11 @@ Link-local IPv6 addresses are shown as a count (`(+N link-local)`) because they 
 
 ### Option 1: Download a release
 
-1. Download the latest binary for your platform from [Releases](https://github.com/discord-proxy-rpc/discord-proxy-rpc/releases).
-2. Create a `config.yaml` (see [Configuration Reference](#configuration-reference)):
-   ```yaml
-   discord:
-     client_id: "YOUR_DISCORD_APP_ID"
-   ```
+1. Download the latest `.zip` for your platform from [Releases](https://github.com/discord-proxy-rpc/discord-proxy-rpc/releases) and unzip it. The archive also contains `discover`, `LICENSE` and `README.md`; `checksums.txt` on the release page lists the SHA-256 of every archive.
+2. Copy the bundled `config.example.yaml` to `config.yaml` next to the binary, then set `discord.client_id` to your Discord Application ID (see [Configuration Reference](#configuration-reference)). Every other key already has a working default.
 3. Run the binary:
    ```bash
-   ./discord-proxy-linux-amd64
+   ./discord-proxy
    ```
 4. Open `http://<your-host-ip>:8765` in any browser on your LAN.
 
@@ -559,10 +555,10 @@ The `-token` flag is only needed when the proxy runs with `auth.enabled: true`; 
 Releases are automated via GitHub Actions using semantic-release:
 
 1. Push to `main` triggers the release workflow.
-2. The `version` job runs semantic-release to determine the version bump (based on conventional commit messages in squash-merged PRs) and creates a Git tag.
-3. If a new release is detected, the `build` job cross-compiles binaries for five targets (Linux amd64/arm64, Windows amd64, macOS amd64/arm64).
-4. The `draft-release` job creates a draft GitHub Release with the generated release notes and attaches the binaries.
-5. Review the draft release, then publish it when ready.
+2. The `version` job runs semantic-release to determine the version bump (based on conventional commit messages in squash-merged PRs), creates the Git tag and publishes the GitHub Release with the generated notes.
+3. If a new release is detected, the `goreleaser` job cross-compiles both binaries for five targets (Linux amd64/arm64, Windows amd64, macOS amd64/arm64) and uploads one `.zip` per target.
+4. Each zip holds `discord-proxy`, `discover`, `config.example.yaml`, `LICENSE` and `README.md`; `checksums.txt` carries the SHA-256 of every archive.
+5. GoReleaser runs with `release.mode: append`, so the assets attach to the release semantic-release already published instead of failing on an existing release.
 
 ### Docker build
 

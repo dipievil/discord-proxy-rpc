@@ -419,11 +419,11 @@ make build-all
 
 - Trigger: push to `main`
 - Process:
-    1. `version` job runs semantic-release to determine version bump, creates Git tag.
-    2. If a new release, `build` job cross-compiles binaries for 5 platforms.
-    3. `draft-release` job creates a draft GitHub Release with the generated notes and uploads binaries.
-- Outputs: Linux (amd64, arm64), Windows (amd64), macOS (amd64, arm64)
-- Artifacts: binaries attached to draft release (review before publishing)
+    1. `version` job runs semantic-release: computes the version bump, creates the Git tag and publishes the GitHub Release with generated notes.
+    2. If a new release, the `goreleaser` job runs `goreleaser release --clean` with `GORELEASER_CURRENT_TAG` set to that tag; `release.mode: append` attaches the archives to the release semantic-release created instead of failing on an existing release.
+- Outputs: one `.zip` per target — Linux (amd64, arm64), Windows (amd64), macOS (amd64, arm64)
+- Each archive carries everything a user needs: both binaries (`discord-proxy` and `discover`), `config.example.yaml`, `LICENSE` and `README.md`
+- `checksums.txt` (SHA-256 of every archive) is attached to the release
 
 ### Docker
 
