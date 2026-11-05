@@ -75,6 +75,7 @@ func main() {
 		server.WithGetIPCState(func() string { return client.State().String() }),
 		server.WithWSPath(cfg.Server.WsPath),
 		server.WithRateLimiter(rateLimiter),
+		server.WithTrustedProxies(cfg.Server.TrustedProxies),
 		server.WithConnectionTracker(server.NewConnectionTracker(cfg.Server.MaxWSConnections)),
 	}
 	if cfg.Auth.Enabled {

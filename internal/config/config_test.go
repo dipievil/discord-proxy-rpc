@@ -53,11 +53,14 @@ func TestDefaults(t *testing.T) {
 	if cfg.Server.MaxWSConnections != 100 {
 		t.Errorf("server.max_ws_connections = %d, want 100", cfg.Server.MaxWSConnections)
 	}
-	if cfg.Server.RateLimitPerIP != 10 {
-		t.Errorf("server.rate_limit_per_ip = %d, want 10", cfg.Server.RateLimitPerIP)
+	if cfg.Server.RateLimitPerIP != DefaultRateLimitPerIP {
+		t.Errorf("server.rate_limit_per_ip = %d, want %d", cfg.Server.RateLimitPerIP, DefaultRateLimitPerIP)
 	}
 	if cfg.Server.RateLimitWindow != time.Minute {
 		t.Errorf("server.rate_limit_window = %v, want 1m", cfg.Server.RateLimitWindow)
+	}
+	if len(cfg.Server.TrustedProxies) != 0 {
+		t.Errorf("server.trusted_proxies = %v, want empty (RemoteAddr only)", cfg.Server.TrustedProxies)
 	}
 
 	if cfg.Auth.Enabled {
@@ -128,6 +131,17 @@ auth:
 	}
 }
 
+func TestDefaultRateLimitCoversDashboardReload(t *testing.T) {
+	// One dashboard load costs index.html, style.css, app.js and the WebSocket
+	// upgrade. The shipped budget must leave room for reloads and reconnect
+	// attempts instead of letting the primary UI trip its own limiter.
+	const perLoad = 4
+	if reloads := DefaultRateLimitPerIP / perLoad; reloads < 3 {
+		t.Errorf("DefaultRateLimitPerIP = %d: only %d dashboard loads fit in one window, want at least 3",
+			DefaultRateLimitPerIP, reloads)
+	}
+}
+
 func TestEnvVarOverrides(t *testing.T) {
 	envVars := map[string]string{
 		"PROXY_DISCORD_CLIENT_ID":         "env-client-id",
@@ -141,6 +155,7 @@ func TestEnvVarOverrides(t *testing.T) {
 		"PROXY_SERVER_MAX_WS_CONNECTIONS": "50",
 		"PROXY_SERVER_RATE_LIMIT_PER_IP":  "20",
 		"PROXY_SERVER_RATE_LIMIT_WINDOW":  "30s",
+		"PROXY_SERVER_TRUSTED_PROXIES":    "10.0.0.0/8,192.168.0.0/24",
 	}
 
 	for k, v := range envVars {
@@ -187,6 +202,15 @@ func TestEnvVarOverrides(t *testing.T) {
 	}
 	if cfg.Server.RateLimitWindow != 30*time.Second {
 		t.Errorf("server.rate_limit_window = %v, want 30s", cfg.Server.RateLimitWindow)
+	}
+	wantProxies := []string{"10.0.0.0/8", "192.168.0.0/24"}
+	if len(cfg.Server.TrustedProxies) != len(wantProxies) {
+		t.Fatalf("server.trusted_proxies = %v, want %v", cfg.Server.TrustedProxies, wantProxies)
+	}
+	for i, want := range wantProxies {
+		if cfg.Server.TrustedProxies[i] != want {
+			t.Errorf("server.trusted_proxies[%d] = %q, want %q", i, cfg.Server.TrustedProxies[i], want)
+		}
 	}
 }
 
@@ -312,6 +336,47 @@ func TestValidateNonNumericClientID(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not a valid Discord Application ID") {
 		t.Errorf("error %q does not mention numeric validation", err)
+	}
+}
+
+func TestValidateTrustedProxies(t *testing.T) {
+	tests := []struct {
+		name    string
+		proxies []string
+		wantErr bool
+	}{
+		{"empty", nil, false},
+		{"valid CIDRs", []string{"10.0.0.0/8", " 192.168.0.0/24 "}, false},
+		{"valid IPv6 CIDR", []string{"fd00::/8"}, false},
+		{"plain IP", []string{"10.0.0.1"}, true},
+		{"garbage", []string{"not-a-cidr"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{}
+			cfg.Discord.ClientID = "123456789012345678"
+			cfg.Server.TrustedProxies = tt.proxies
+
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Validate(): want error, got nil")
+				}
+				if !strings.Contains(err.Error(), "server.trusted_proxies") {
+					t.Errorf("error %q does not name server.trusted_proxies", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate(): %v", err)
+			}
+			for i, entry := range cfg.Server.TrustedProxies {
+				if strings.TrimSpace(entry) != entry {
+					t.Errorf("trusted_proxies[%d] = %q, want trimmed", i, entry)
+				}
+			}
+		})
 	}
 }
 

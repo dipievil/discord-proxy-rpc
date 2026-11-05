@@ -130,9 +130,13 @@ When `metrics.enabled: true`, the server registers `/metrics` (Prometheus text f
 | `discord_proxy_ws_connected_clients` | gauge | `Hub.ClientCount()` at scrape time |
 | `discord_proxy_presence_coalesced_sends_total` | counter | presence subscription callback (fires once per coalesced flush) |
 | `discord_proxy_ipc_connected` | gauge (0/1) | IPC state getter at scrape time (`connected` ⇒ 1) |
-| `discord_proxy_rate_limit_rejections_total` | counter | `RateLimiter` denial counter |
+| `discord_proxy_rate_limit_rejections_total` | counter | `RateLimiter` denial counter (dashboard, REST and WS rejections) |
 
 **Access control:** when `auth.enabled: true`, `/`, `/index.html`, the embedded static assets, `/api/presence` and `/api/state` require the bearer token; `/health`, `/healthz` and `/readyz` stay open so probes work without credentials. API routes answer an unauthenticated request with the `AUTH_001` JSON envelope (HTTP 401), while the dashboard answers a plain-text 401.
+
+**Rate limiting:** a single per-IP limiter (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 60 requests per minute) guards the dashboard and its static assets, `/api/presence`, `/api/state` and the WebSocket upgrade; all routes share one budget per IP. The middleware runs before auth so unauthenticated floods are rejected without the constant-time token comparison. Rejections answer HTTP 429 with a `Retry-After` header in whole seconds and `Cache-Control: no-store`; REST and WS routes carry the `REQ_002` envelope, while the dashboard answers plain text for direct rendering in the tab. A rejection increments `discord_proxy_rate_limit_rejections_total`; the first rejection per IP per window is logged at warning level and later ones at debug, so a reconnect loop cannot flood the log. `/health`, `/healthz`, `/readyz` and `/metrics` are deliberately registered without the middleware: probes and Prometheus scrapes must keep working while an IP is limited, and they are not useful amplification targets. A limiter that is `nil` or has a non-positive rate or window is disabled. The default budget covers a dashboard load, which costs four requests (HTML, CSS, JS and the WS upgrade), plus several reloads and reconnect attempts.
+
+**Client identity:** the limiter keys on the TCP peer (`RemoteAddr`) by default. `server.trusted_proxies` lists CIDR blocks whose `X-Forwarded-For` is honoured; when the peer is trusted the limiter takes the last hop that is not itself trusted, so clients behind an ingress keep separate budgets and an untrusted client cannot forge its IP. An empty list ignores forwarding headers entirely.
 
 #### WebSocket Protocol
 
@@ -181,10 +185,10 @@ Error frames are sent in direct response to a client message that could not be p
 | `MSG_001` | `ErrCodeInvalidMessage` | Malformed JSON, missing/unknown `type`, unknown event in `subscribe`, or any parse failure |
 | `INT_001` | `ErrCodeInternal` | Internal server error (including a recovered panic) |
 | `REQ_001` | `ErrCodePayloadTooLarge` | Request body exceeds the 1 MiB cap (HTTP 413) |
-| `REQ_002` | `ErrCodeRateLimited` | WS upgrade rate limit exceeded (HTTP 429) |
+| `REQ_002` | `ErrCodeRateLimited` | Request rate limit exceeded on the dashboard, REST or WS upgrade (HTTP 429, with `Retry-After`) |
 | `REQ_003` | `ErrCodeTooManyConns` | Max concurrent WS connections reached (HTTP 503) |
 
-HTTP-level errors (auth failure, oversized body, rate limit, connection cap, recovered panic) use the same codes in a top-level JSON envelope: `{ "code": "<CODE>", "error": "<message>" }`. WS `error` frames instead nest them under `payload` as `{ "code", "message" }`.
+HTTP-level errors on the API and WS surface (auth failure, oversized body, rate limit, connection cap, recovered panic) use the same codes in a top-level JSON envelope: `{ "code": "<CODE>", "error": "<message>" }`; dashboard routes answer 401 and 429 as plain text because the browser renders the body directly. A rate-limit rejection also carries `Retry-After` with the remaining seconds in the current window and `Cache-Control: no-store`. WS `error` frames instead nest them under `payload` as `{ "code", "message" }`.
 
 **Presence Snapshot** (payload of `presence` / `current` and body of `/api/presence`)
 
@@ -279,8 +283,9 @@ server:
   read_timeout: 10s
   write_timeout: 10s
   max_ws_connections: 100    # cap on concurrent WebSocket clients
-  rate_limit_per_ip: 10      # max WS upgrades per IP within the window
+  rate_limit_per_ip: 60      # max requests per IP within the window (dashboard, REST, WS)
   rate_limit_window: 1m      # rate-limit window
+  trusted_proxies: []        # CIDRs whose X-Forwarded-For is honoured (empty = RemoteAddr only)
 
 auth:
   enabled: false
@@ -478,7 +483,7 @@ ENTRYPOINT ["discord-proxy"]
 - **Read-only**: No `SET_ACTIVITY` command exposed
 - **LAN only**: Binds to `0.0.0.0` by default; restrict via firewall or `host: "127.0.0.1"` + VPN (Tailscale)
 - **Optional token auth**: Enable `auth.enabled: true` + set `PROXY_AUTH_TOKEN` for shared-secret auth on the WS upgrade, REST endpoints, and dashboard; comparison is constant-time. Health probes (`/health`, `/healthz`, `/readyz`) stay unauthenticated so container/k8s probes keep working. The legacy `PROXY_TOKEN` env var was removed in task 9.6 — `PROXY_AUTH_TOKEN` is the sole env source
-- **WS rate limiting**: Per-IP limiter on WS upgrades (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 10 upgrades per minute per IP); excess upgrades get HTTP 429 `REQ_002`
+- **Per-IP rate limiting** -- `server.rate_limit_per_ip` / `server.rate_limit_window` (defaults: 60 requests per minute) throttle the dashboard, the REST endpoints (`/api/*`) and the WebSocket upgrade from one client IP, sharing a single budget. Excess requests get HTTP 429 `REQ_002` with a `Retry-After` header, `Cache-Control: no-store`, and a plain-text body on the dashboard. `/health`, `/healthz`, `/readyz` and `/metrics` are exempt so probes and scrapes keep working. Set the rate to `0` to disable it. Behind an ingress, `server.trusted_proxies` makes the limiter key on the forwarded client instead of the proxy address; the header is ignored otherwise, so it cannot be spoofed.
 - **Max WS connections**: Concurrent client cap (`server.max_ws_connections`, default 100); excess upgrades get HTTP 503 `REQ_003`
 - **Request body cap**: Requests declaring `Content-Length` over 1 MiB are rejected with HTTP 413 `REQ_001`; unknown-length (chunked) bodies are capped via `MaxBytesReader`, so any read past 1 MiB fails. The current handlers never read request bodies (all routes are read-only), so an oversized chunked body is ignored rather than rejected with 413
 - **Panic recovery**: `RecoveryMiddleware` wraps the HTTP mux (plus an inner recover in the WS handler); a panicking handler returns HTTP 500 `INT_001` instead of crashing the process

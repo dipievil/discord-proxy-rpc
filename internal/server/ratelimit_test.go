@@ -132,6 +132,147 @@ func TestRateLimiterEvictsExpiredVisitors(t *testing.T) {
 	})
 }
 
+func TestRateLimiterEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		rl   *RateLimiter
+		want bool
+	}{
+		{"configured", NewRateLimiter(1, time.Minute), true},
+		{"nil", nil, false},
+		{"zero rate", NewRateLimiter(0, time.Minute), false},
+		{"negative rate", NewRateLimiter(-1, time.Minute), false},
+		{"zero window", NewRateLimiter(1, 0), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.rl != nil {
+				t.Cleanup(tt.rl.Stop)
+			}
+			if got := tt.rl.Enabled(); got != tt.want {
+				t.Errorf("Enabled() = %v, want %v", got, tt.want)
+			}
+
+			if tt.want {
+				return
+			}
+			// A disabled limiter, including a nil one, must never reject.
+			for i := 0; i < 5; i++ {
+				if !tt.rl.Allow("10.9.0.1") {
+					t.Fatalf("Allow() = false on request %d with a disabled limiter", i+1)
+				}
+			}
+		})
+	}
+}
+
+func TestRateLimiterRetryAfter(t *testing.T) {
+	rl := newTestRateLimiter(t, 1, time.Minute)
+
+	// An IP without an active window is allowed by Allow, so there is nothing
+	// to wait for: RetryAfter must agree instead of reporting a full window.
+	if got := rl.RetryAfter("10.9.0.1"); got != 0 {
+		t.Errorf("RetryAfter(unseen IP) = %v, want 0", got)
+	}
+
+	ip := "10.9.0.2"
+	if !rl.Allow(ip) {
+		t.Fatal("first request should be allowed")
+	}
+	if rl.Allow(ip) {
+		t.Fatal("second request should be blocked")
+	}
+	if got := rl.RetryAfter(ip); got <= 0 || got > time.Minute {
+		t.Errorf("RetryAfter(limited IP) = %v, want (0, %v]", got, time.Minute)
+	}
+}
+
+func TestRateLimiterRetryAfterExpiredWindow(t *testing.T) {
+	rl := newTestRateLimiter(t, 1, 20*time.Millisecond)
+
+	ip := "10.9.0.3"
+	if !rl.Allow(ip) {
+		t.Fatal("first request should be allowed")
+	}
+
+	waitFor(t, 2*time.Second, "window to elapse", func() bool {
+		return rl.RetryAfter(ip) == 0
+	})
+}
+
+func TestRateLimiterMarkWarned(t *testing.T) {
+	rl := newTestRateLimiter(t, 1, 50*time.Millisecond)
+
+	ip := "10.9.1.1"
+	if !rl.Allow(ip) {
+		t.Fatal("first request should be allowed")
+	}
+	if rl.Allow(ip) {
+		t.Fatal("second request should be blocked")
+	}
+
+	if !rl.MarkWarned(ip) {
+		t.Error("first rejection in a window should be warned")
+	}
+	if rl.MarkWarned(ip) {
+		t.Error("further rejections in the same window should not warn again")
+	}
+
+	waitFor(t, 2*time.Second, "a new window to start", func() bool {
+		return rl.Allow(ip)
+	})
+	if rl.Allow(ip) {
+		t.Fatal("second request in the new window should be blocked")
+	}
+	if !rl.MarkWarned(ip) {
+		t.Error("first rejection in a new window should be warned")
+	}
+}
+
+func TestRateLimiterMarkWarnedDisabled(t *testing.T) {
+	var nilLimiter *RateLimiter
+	if nilLimiter.MarkWarned("10.9.1.2") {
+		t.Error("nil limiter should not warn")
+	}
+
+	rl := newTestRateLimiter(t, 0, time.Minute)
+	if rl.MarkWarned("10.9.1.2") {
+		t.Error("disabled limiter should not warn")
+	}
+}
+
+func TestRateLimiterRetryAfterDisabled(t *testing.T) {
+	var nilLimiter *RateLimiter
+	if got := nilLimiter.RetryAfter("10.9.0.1"); got != 0 {
+		t.Errorf("nil limiter RetryAfter = %v, want 0", got)
+	}
+
+	rl := newTestRateLimiter(t, 0, time.Minute)
+	if got := rl.RetryAfter("10.9.0.1"); got != 0 {
+		t.Errorf("disabled limiter RetryAfter = %v, want 0", got)
+	}
+}
+
+func TestRetryAfterSeconds(t *testing.T) {
+	tests := []struct {
+		in   time.Duration
+		want string
+	}{
+		{0, "1"},
+		{500 * time.Millisecond, "1"},
+		{time.Second, "1"},
+		{1500 * time.Millisecond, "2"},
+		{59*time.Second + 900*time.Millisecond, "60"},
+	}
+
+	for _, tt := range tests {
+		if got := retryAfterSeconds(tt.in); got != tt.want {
+			t.Errorf("retryAfterSeconds(%v) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestConnectionTrackerAllowsWithinLimit(t *testing.T) {
 	ct := NewConnectionTracker(3)
 
