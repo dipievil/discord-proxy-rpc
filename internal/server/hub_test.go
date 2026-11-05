@@ -124,6 +124,74 @@ func TestHubBroadcast(t *testing.T) {
 	}
 }
 
+// BroadcastWait is the non-dropping sibling of Broadcast: a message that must
+// reach clients waits for queue space instead of being logged and lost.
+func TestHubBroadcastWaitSurvivesFullQueue(t *testing.T) {
+	hub := NewHub(zap.NewNop())
+	fillBroadcastQueue(t, hub)
+
+	delivered := make(chan bool)
+	go func() {
+		delivered <- hub.BroadcastWait(context.Background(), NewStateMessage(StateDisconnected))
+	}()
+
+	select {
+	case <-delivered:
+		t.Fatal("BroadcastWait returned while the queue was full")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Freeing one slot lets the terminal message through, behind the backlog
+	// that was already queued.
+	<-hub.broadcast
+
+	select {
+	case ok := <-delivered:
+		if !ok {
+			t.Fatal("BroadcastWait reported failure with a free slot and a live context")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("BroadcastWait did not deliver once the queue had space")
+	}
+
+	var last ServerMessage
+	for range cap(hub.broadcast) {
+		last = <-hub.broadcast
+	}
+	if last.Type != MsgTypeState || last.Status != StateDisconnected {
+		t.Fatalf("last queued message = %q/%q, want %q/%q", last.Type, last.Status, MsgTypeState, StateDisconnected)
+	}
+}
+
+func TestHubBroadcastWaitHonoursContext(t *testing.T) {
+	hub := NewHub(zap.NewNop())
+	fillBroadcastQueue(t, hub)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if hub.BroadcastWait(ctx, NewStateMessage(StateDisconnected)) {
+		t.Fatal("BroadcastWait delivered with a cancelled context and a full queue")
+	}
+}
+
+func TestHubBroadcastWaitStopsWhenHubClosed(t *testing.T) {
+	hub := NewHub(zap.NewNop())
+	fillBroadcastQueue(t, hub)
+	hub.Close()
+
+	if hub.BroadcastWait(context.Background(), NewStateMessage(StateDisconnected)) {
+		t.Fatal("BroadcastWait delivered into a closed hub")
+	}
+}
+
+func fillBroadcastQueue(t *testing.T, hub *Hub) {
+	t.Helper()
+	for len(hub.broadcast) < cap(hub.broadcast) {
+		hub.broadcast <- NewStateMessage(StateReconnecting)
+	}
+}
+
 func TestHubBroadcastFiltered(t *testing.T) {
 	hub, cancel := newTestHub(t)
 	defer cancel()

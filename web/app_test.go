@@ -8,9 +8,24 @@ import (
 	"github.com/dop251/goja"
 )
 
+// dashboardEnv is a goja VM running app.js with the browser stubs needed to
+// observe the dashboard outside a browser: the WebSocket it opened and the
+// status indicator's DOM nodes.
+type dashboardEnv struct {
+	vm         *goja.Runtime
+	ws         *goja.Object
+	status     *goja.Object
+	statusText *goja.Object
+}
+
 // runDashboardJS loads web/app.js into a goja VM with a minimal browser mock
 // so the dashboard's pure helper functions can be exercised.
 func runDashboardJS(t *testing.T) *goja.Runtime {
+	t.Helper()
+	return newDashboardEnv(t).vm
+}
+
+func newDashboardEnv(t *testing.T) *dashboardEnv {
 	t.Helper()
 
 	data, err := fs.ReadFile(FS, "app.js")
@@ -19,11 +34,27 @@ func runDashboardJS(t *testing.T) *goja.Runtime {
 	}
 
 	vm := goja.New()
+	env := &dashboardEnv{vm: vm}
 
 	// Minimal DOM mocks so the IIFE can initialize without a real browser.
 	document := vm.NewObject()
 	document.Set("readyState", "complete")
-	document.Set("getElementById", func(string) goja.Value { return goja.Null() })
+
+	env.status = vm.NewObject()
+	env.status.Set("className", "status disconnected")
+	env.statusText = vm.NewObject()
+	env.statusText.Set("textContent", "Disconnected")
+
+	document.Set("getElementById", func(id string) goja.Value {
+		switch id {
+		case "status":
+			return env.status
+		case "status-text":
+			return env.statusText
+		default:
+			return goja.Null()
+		}
+	})
 	document.Set("querySelector", func(string) goja.Value { return goja.Null() })
 	document.Set("addEventListener", func(...interface{}) {})
 	document.Set("createElement", func(string) goja.Value { return vm.NewObject() })
@@ -44,7 +75,11 @@ func runDashboardJS(t *testing.T) *goja.Runtime {
 		"warn":  func(...interface{}) {},
 		"error": func(...interface{}) {},
 	})
-	vm.Set("WebSocket", func(goja.ConstructorCall) *goja.Object { return nil })
+	vm.Set("WebSocket", func(goja.ConstructorCall) *goja.Object {
+		env.ws = vm.NewObject()
+		env.ws.Set("send", func(string) {})
+		return env.ws
+	})
 
 	// Minimal URL parser used by isSafeImageUrl.
 	vm.Set("URL", func(call goja.ConstructorCall) *goja.Object {
@@ -99,7 +134,7 @@ func runDashboardJS(t *testing.T) *goja.Runtime {
 		t.Fatalf("run app.js: %v", err)
 	}
 
-	return vm
+	return env
 }
 
 func dashboardAPI(t *testing.T, vm *goja.Runtime) *goja.Object {
@@ -479,5 +514,49 @@ func TestDashboardPresenceView(t *testing.T) {
 				t.Errorf("activity = %v, want null", activity)
 			}
 		})
+	}
+}
+
+// An open WebSocket only means the proxy accepted the connection; the status
+// indicator must follow the state frames the proxy sends for the IPC link.
+func TestDashboardStatusFollowsProxyState(t *testing.T) {
+	env := newDashboardEnv(t)
+	if env.ws == nil {
+		t.Fatal("dashboard did not open a WebSocket")
+	}
+
+	onopen, ok := goja.AssertFunction(env.ws.Get("onopen"))
+	if !ok {
+		t.Fatal("WebSocket onopen is not callable")
+	}
+	if _, err := onopen(goja.Undefined()); err != nil {
+		t.Fatalf("onopen: %v", err)
+	}
+	if got := env.statusText.Get("textContent").String(); got == "Connected" {
+		t.Errorf("status = %q after the socket opened, want it to stay %q until a state frame arrives", got, "Disconnected")
+	}
+
+	onmessage, ok := goja.AssertFunction(env.ws.Get("onmessage"))
+	if !ok {
+		t.Fatal("WebSocket onmessage is not callable")
+	}
+
+	send := func(frame string) {
+		t.Helper()
+		event := env.vm.NewObject()
+		event.Set("data", frame)
+		if _, err := onmessage(goja.Undefined(), event); err != nil {
+			t.Fatalf("onmessage(%s): %v", frame, err)
+		}
+	}
+
+	send(`{"type":"state","status":"connected"}`)
+	if got := env.statusText.Get("textContent").String(); got != "Connected" {
+		t.Errorf("status = %q after connected state frame, want %q", got, "Connected")
+	}
+
+	send(`{"type":"state","status":"disconnected"}`)
+	if got := env.statusText.Get("textContent").String(); got != "Disconnected" {
+		t.Errorf("status = %q after disconnected state frame, want %q", got, "Disconnected")
 	}
 }
