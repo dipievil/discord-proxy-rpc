@@ -251,8 +251,9 @@ server:
   read_timeout: 10s                      # HTTP read timeout
   write_timeout: 10s                     # HTTP write timeout
   max_ws_connections: 100                # Cap on concurrent WebSocket clients
-  rate_limit_per_ip: 10                  # Max requests per IP within the window (dashboard, REST, WS)
+  rate_limit_per_ip: 60                  # Max requests per IP within the window (dashboard, REST, WS)
   rate_limit_window: 1m                  # Rate-limit window
+  trusted_proxies: []                    # CIDRs whose X-Forwarded-For is honoured (empty = RemoteAddr only)
 
 auth:
   enabled: false                         # Enable Bearer token auth
@@ -290,8 +291,9 @@ Every config key can be set via an environment variable with the `PROXY_` prefix
 | `server.read_timeout` | `PROXY_SERVER_READ_TIMEOUT` | `10s` |
 | `server.write_timeout` | `PROXY_SERVER_WRITE_TIMEOUT` | `10s` |
 | `server.max_ws_connections` | `PROXY_SERVER_MAX_WS_CONNECTIONS` | `100` |
-| `server.rate_limit_per_ip` | `PROXY_SERVER_RATE_LIMIT_PER_IP` | `10` |
+| `server.rate_limit_per_ip` | `PROXY_SERVER_RATE_LIMIT_PER_IP` | `60` |
 | `server.rate_limit_window` | `PROXY_SERVER_RATE_LIMIT_WINDOW` | `1m` |
+| `server.trusted_proxies` | `PROXY_SERVER_TRUSTED_PROXIES` | `""` (comma-separated CIDRs; empty = use the TCP peer) |
 | `auth.enabled` | `PROXY_AUTH_ENABLED` | `false` |
 | `auth.token` | `PROXY_AUTH_TOKEN` | `""` |
 | `mdns.enabled` | `PROXY_MDNS_ENABLED` | `true` |
@@ -385,7 +387,9 @@ PROXY_HOST=192.168.0.103 PROXY_PORT=8765 PROXY_AUTH_TOKEN=<your-token> bin/disco
 
 **Access control:** with `auth.enabled: true`, `/`, `/index.html`, the static assets, `/api/presence` and `/api/state` require the token (`Authorization: Bearer <token>` or `?token=<token>`); an unauthenticated request gets HTTP 401 — a JSON `AUTH_001` body on `/api/*`, plain text on the dashboard. `/health`, `/healthz` and `/readyz` are never auth-gated.
 
-**Rate limiting:** the per-IP limiter (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 10 requests per minute) covers the dashboard and its static assets, `/api/presence`, `/api/state` and the WebSocket upgrade. All of them share one budget per client IP, and the check runs before auth, so a flood is rejected before the token comparison. A request over the limit gets HTTP 429 with the `REQ_002` JSON envelope and a `Retry-After` header carrying the remaining seconds of the window. `/health`, `/healthz`, `/readyz` and `/metrics` are exempt so container probes and Prometheus scrapes keep answering while an IP is limited. Setting `server.rate_limit_per_ip` to `0` or a negative value disables limiting (a non-positive window does too). A dashboard page load costs several requests (HTML, CSS, JS and the WebSocket upgrade), so the default budget allows only a couple of reloads per minute from one IP; raise `rate_limit_per_ip` if the UI is used heavily behind one NAT address.
+**Rate limiting:** the per-IP limiter (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 60 requests per minute) covers the dashboard and its static assets, `/api/presence`, `/api/state` and the WebSocket upgrade. All of them share one budget per client IP, and the check runs before auth, so a flood is rejected before the token comparison. A request over the limit gets HTTP 429 with a `Retry-After` header carrying the remaining seconds of the window and `Cache-Control: no-store` so a cached asset response cannot replay the rejection; REST and WebSocket routes answer the `REQ_002` JSON envelope, while the dashboard answers plain text because the browser renders that body directly. The first rejection from an IP in a window is logged at warning level and later ones at debug, so a reconnecting tab cannot flood the log; `discord_proxy_rate_limit_rejections_total` carries the exact count. `/health`, `/healthz`, `/readyz` and `/metrics` are exempt so container probes and Prometheus scrapes keep answering while an IP is limited. Setting `server.rate_limit_per_ip` to `0` or a negative value disables limiting (a non-positive window does too). A dashboard page load costs four requests (HTML, CSS, JS and the WebSocket upgrade), so the default budget covers several reloads and reconnect attempts from one IP.
+
+**Behind a reverse proxy or ingress:** the limiter keys on the TCP peer by default. With a proxy in front, every client would share the proxy's budget, so list the proxy's addresses in `server.trusted_proxies` (CIDR blocks, e.g. `["10.0.0.0/8"]`); the last `X-Forwarded-For` hop that is not itself trusted then becomes the client. An empty list ignores forwarding headers entirely, so a client cannot forge its identity by sending one.
 
 #### Kubernetes Probes
 

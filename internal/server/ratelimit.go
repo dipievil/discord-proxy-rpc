@@ -22,6 +22,9 @@ type RateLimiter struct {
 type visitor struct {
 	count    int
 	lastSeen time.Time
+	// warned records that a rejection in this window was already logged, so
+	// the server warns once per IP per window instead of once per request.
+	warned bool
 }
 
 // NewRateLimiter creates an IP-based rate limiter allowing rate requests per
@@ -87,7 +90,9 @@ func (rl *RateLimiter) Allow(ip string) bool {
 
 // RetryAfter reports how long the IP must wait before its current window
 // expires and requests are allowed again. It returns zero when the limiter is
-// disabled or the window has already elapsed.
+// disabled, when the IP has no active window (Allow would let it through), or
+// when the window has already elapsed. The contract matches Allow: an entry
+// that is missing or older than the window is not an active limit.
 func (rl *RateLimiter) RetryAfter(ip string) time.Duration {
 	if !rl.Enabled() {
 		return 0
@@ -97,15 +102,39 @@ func (rl *RateLimiter) RetryAfter(ip string) time.Duration {
 	defer rl.mu.Unlock()
 
 	v, ok := rl.visitors[ip]
-	if !ok {
-		return rl.window
-	}
-
-	remaining := rl.window - time.Since(v.lastSeen)
-	if remaining < 0 {
+	if !ok || time.Since(v.lastSeen) > rl.window {
 		return 0
 	}
-	return remaining
+
+	if remaining := rl.window - time.Since(v.lastSeen); remaining > 0 {
+		return remaining
+	}
+	return 0
+}
+
+// MarkWarned reports whether a rejection for ip should be logged at warning
+// level: true on the first rejection in the current window, false afterwards.
+// The caller can log later rejections at debug level, keeping the warning
+// signal without flooding the log; the rejection metric carries the volume.
+// An entry that is missing or expired has no rejection to suppress yet and
+// reports true without keeping state.
+func (rl *RateLimiter) MarkWarned(ip string) bool {
+	if !rl.Enabled() {
+		return false
+	}
+
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	v, ok := rl.visitors[ip]
+	if !ok || time.Since(v.lastSeen) > rl.window {
+		return true
+	}
+	if v.warned {
+		return false
+	}
+	v.warned = true
+	return true
 }
 
 // Rejections reports how many requests Allow has denied since creation. It

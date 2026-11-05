@@ -14,8 +14,9 @@ server:
   read_timeout: 10s
   write_timeout: 10s
   max_ws_connections: 100    # cap on concurrent WebSocket clients
-  rate_limit_per_ip: 10      # max requests per IP within the window (dashboard, REST, WS)
+  rate_limit_per_ip: 60      # max requests per IP within the window (dashboard, REST, WS)
   rate_limit_window: 1m      # rate-limit window
+  trusted_proxies: []        # CIDRs whose X-Forwarded-For is honoured (empty = RemoteAddr only)
 
 auth:
   enabled: false

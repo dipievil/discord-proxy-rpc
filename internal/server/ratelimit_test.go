@@ -170,8 +170,10 @@ func TestRateLimiterEnabled(t *testing.T) {
 func TestRateLimiterRetryAfter(t *testing.T) {
 	rl := newTestRateLimiter(t, 1, time.Minute)
 
-	if got := rl.RetryAfter("10.9.0.1"); got != time.Minute {
-		t.Errorf("RetryAfter(unseen IP) = %v, want the full window %v", got, time.Minute)
+	// An IP without an active window is allowed by Allow, so there is nothing
+	// to wait for: RetryAfter must agree instead of reporting a full window.
+	if got := rl.RetryAfter("10.9.0.1"); got != 0 {
+		t.Errorf("RetryAfter(unseen IP) = %v, want 0", got)
 	}
 
 	ip := "10.9.0.2"
@@ -183,6 +185,60 @@ func TestRateLimiterRetryAfter(t *testing.T) {
 	}
 	if got := rl.RetryAfter(ip); got <= 0 || got > time.Minute {
 		t.Errorf("RetryAfter(limited IP) = %v, want (0, %v]", got, time.Minute)
+	}
+}
+
+func TestRateLimiterRetryAfterExpiredWindow(t *testing.T) {
+	rl := newTestRateLimiter(t, 1, 20*time.Millisecond)
+
+	ip := "10.9.0.3"
+	if !rl.Allow(ip) {
+		t.Fatal("first request should be allowed")
+	}
+
+	waitFor(t, 2*time.Second, "window to elapse", func() bool {
+		return rl.RetryAfter(ip) == 0
+	})
+}
+
+func TestRateLimiterMarkWarned(t *testing.T) {
+	rl := newTestRateLimiter(t, 1, 50*time.Millisecond)
+
+	ip := "10.9.1.1"
+	if !rl.Allow(ip) {
+		t.Fatal("first request should be allowed")
+	}
+	if rl.Allow(ip) {
+		t.Fatal("second request should be blocked")
+	}
+
+	if !rl.MarkWarned(ip) {
+		t.Error("first rejection in a window should be warned")
+	}
+	if rl.MarkWarned(ip) {
+		t.Error("further rejections in the same window should not warn again")
+	}
+
+	waitFor(t, 2*time.Second, "a new window to start", func() bool {
+		return rl.Allow(ip)
+	})
+	if rl.Allow(ip) {
+		t.Fatal("second request in the new window should be blocked")
+	}
+	if !rl.MarkWarned(ip) {
+		t.Error("first rejection in a new window should be warned")
+	}
+}
+
+func TestRateLimiterMarkWarnedDisabled(t *testing.T) {
+	var nilLimiter *RateLimiter
+	if nilLimiter.MarkWarned("10.9.1.2") {
+		t.Error("nil limiter should not warn")
+	}
+
+	rl := newTestRateLimiter(t, 0, time.Minute)
+	if rl.MarkWarned("10.9.1.2") {
+		t.Error("disabled limiter should not warn")
 	}
 }
 

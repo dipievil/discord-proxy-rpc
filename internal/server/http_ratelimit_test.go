@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/internal/config"
 )
@@ -43,6 +44,7 @@ func TestHTTPRateLimitRejectsOverLimit(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			rl := newTestRateLimiter(t, 2, time.Minute)
 			srv := NewServer(NewHub(zap.NewNop()), zap.NewNop(), WithRateLimiter(rl))
+			apiRoute := strings.HasPrefix(path, "/api/")
 
 			for i := 1; i <= 2; i++ {
 				if rec := testGetFromIP(t, srv, "10.1.0.1", path); rec.Code != http.StatusOK {
@@ -54,11 +56,27 @@ func TestHTTPRateLimitRejectsOverLimit(t *testing.T) {
 			if rec.Code != http.StatusTooManyRequests {
 				t.Fatalf("request over limit = %d, want %d", rec.Code, http.StatusTooManyRequests)
 			}
-			if code := testDecodeAPIError(t, rec).Code; code != ErrCodeRateLimited {
-				t.Errorf("error code = %q, want %q", code, ErrCodeRateLimited)
+
+			if apiRoute {
+				if code := testDecodeAPIError(t, rec).Code; code != ErrCodeRateLimited {
+					t.Errorf("error code = %q, want %q", code, ErrCodeRateLimited)
+				}
+				if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+					t.Errorf("Content-Type = %q, want application/json", ct)
+				}
+			} else {
+				// The dashboard renders the body directly, so it gets plain
+				// text rather than a JSON envelope in the tab.
+				if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+					t.Errorf("Content-Type = %q, want text/plain", ct)
+				}
+				if body := rec.Body.String(); !strings.Contains(body, "rate limit exceeded") {
+					t.Errorf("dashboard body = %q, want the plain-text rejection", body)
+				}
 			}
-			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-				t.Errorf("Content-Type = %q, want application/json", ct)
+
+			if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store (a 429 must not be cached)", cc)
 			}
 
 			retry := rec.Header().Get("Retry-After")
@@ -242,5 +260,110 @@ func TestRateLimitValidTokenStillLimited(t *testing.T) {
 	}
 	if rec := authed("/api/state"); rec.Code != http.StatusTooManyRequests {
 		t.Errorf("second authed request = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestRateLimitLogsOneWarningPerWindow(t *testing.T) {
+	core, logs := observer.New(zap.DebugLevel)
+	rl := newTestRateLimiter(t, 1, time.Minute)
+	srv := NewServer(NewHub(zap.NewNop()), zap.New(core), WithRateLimiter(rl))
+
+	if rec := testGetFromIP(t, srv, "10.7.0.1", "/api/presence"); rec.Code != http.StatusOK {
+		t.Fatalf("first request = %d, want %d", rec.Code, http.StatusOK)
+	}
+	for i := 0; i < 3; i++ {
+		if rec := testGetFromIP(t, srv, "10.7.0.1", "/api/presence"); rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("rejected request %d = %d, want %d", i+1, rec.Code, http.StatusTooManyRequests)
+		}
+	}
+
+	limited := logs.FilterMessage("request rate limited")
+	if got := limited.FilterLevelExact(zap.WarnLevel).Len(); got != 1 {
+		t.Errorf("warn entries = %d, want 1 (one warning per IP per window)", got)
+	}
+	if got := limited.FilterLevelExact(zap.DebugLevel).Len(); got != 2 {
+		t.Errorf("debug entries = %d, want 2 (later rejections are demoted)", got)
+	}
+}
+
+func TestDefaultBudgetCoversDashboardReloads(t *testing.T) {
+	rl := newTestRateLimiter(t, config.DefaultRateLimitPerIP, time.Minute)
+	srv := NewServer(NewHub(zap.NewNop()), zap.NewNop(), WithRateLimiter(rl))
+
+	// A dashboard load costs index.html, style.css, app.js and the WebSocket
+	// upgrade. Three loads must fit in one shipped window, so reloading the
+	// primary UI cannot leave the page answering 429 to its own assets.
+	assets := []string{"/", "/style.css", "/app.js", "/api/presence"}
+	for load := 1; load <= 3; load++ {
+		for _, path := range assets {
+			if rec := testGetFromIP(t, srv, "10.8.0.1", path); rec.Code != http.StatusOK {
+				t.Fatalf("load %d %s = %d, want %d", load, path, rec.Code, http.StatusOK)
+			}
+		}
+	}
+}
+
+func TestClientIP(t *testing.T) {
+	tests := []struct {
+		name    string
+		proxies []string
+		peer    string
+		xff     string
+		want    string
+	}{
+		{"no trusted proxy ignores XFF", nil, "10.0.0.5:1234", "203.0.113.5", "10.0.0.5"},
+		{"untrusted peer ignores XFF", []string{"10.0.0.0/8"}, "203.0.113.9:1234", "1.2.3.4", "203.0.113.9"},
+		{"trusted peer uses XFF", []string{"10.0.0.0/8"}, "10.0.0.5:1234", "203.0.113.5", "203.0.113.5"},
+		{"last untrusted hop wins", []string{"10.0.0.0/8"}, "10.0.0.5:1234", "1.2.3.4, 203.0.113.5", "203.0.113.5"},
+		{"skips hops that are trusted", []string{"10.0.0.0/8"}, "10.0.0.5:1234", "203.0.113.5, 10.0.0.6", "203.0.113.5"},
+		{"trusted peer without XFF", []string{"10.0.0.0/8"}, "10.0.0.5:1234", "", "10.0.0.5"},
+		{"malformed XFF falls back to peer", []string{"10.0.0.0/8"}, "10.0.0.5:1234", "not-an-ip", "10.0.0.5"},
+		{"trusted IPv6 peer", []string{"fd00::/8"}, "[fd00::1]:1234", "203.0.113.5", "203.0.113.5"},
+		{"invalid proxy entries are ignored", []string{"bogus"}, "10.0.0.5:1234", "203.0.113.5", "10.0.0.5"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := NewServer(NewHub(zap.NewNop()), zap.NewNop(), WithTrustedProxies(tt.proxies))
+
+			req := httptest.NewRequest(http.MethodGet, "/api/presence", nil)
+			req.RemoteAddr = tt.peer
+			if tt.xff != "" {
+				req.Header.Set("X-Forwarded-For", tt.xff)
+			}
+
+			if got := srv.clientIP(req); got != tt.want {
+				t.Errorf("clientIP() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRateLimitBudgetsArePerForwardedClient(t *testing.T) {
+	rl := newTestRateLimiter(t, 1, time.Minute)
+	srv := NewServer(NewHub(zap.NewNop()), zap.NewNop(),
+		WithRateLimiter(rl),
+		WithTrustedProxies([]string{"10.0.0.0/8"}),
+	)
+
+	request := func(peer, client string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/presence", nil)
+		req.RemoteAddr = peer + ":1234"
+		req.Header.Set("X-Forwarded-For", client)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := request("10.0.0.5", "203.0.113.5"); rec.Code != http.StatusOK {
+		t.Fatalf("first client first request = %d, want %d", rec.Code, http.StatusOK)
+	}
+	// Another ingress node forwards the same client: still the same budget.
+	if rec := request("10.0.0.6", "203.0.113.5"); rec.Code != http.StatusTooManyRequests {
+		t.Errorf("same client through another proxy = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+	// A different client behind the same ingress keeps its own budget.
+	if rec := request("10.0.0.5", "203.0.113.6"); rec.Code != http.StatusOK {
+		t.Errorf("other client = %d, want %d", rec.Code, http.StatusOK)
 	}
 }

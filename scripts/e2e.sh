@@ -41,6 +41,36 @@ dump_binary_log() {
     tail -20 "$BINARY_LOG" | sed 's/^/    /'
 }
 
+# wait_for_ready waits until the running $PID answers /health, failing the
+# suite when it exits or the deadline passes. It sets READY=1 on success.
+wait_for_ready() {
+    local desc="$1"
+
+    echo "  Waiting up to ${STARTUP_TIMEOUT}s for ${desc} on port ${PORT}..."
+    READY=0
+    local deadline=$((SECONDS + STARTUP_TIMEOUT))
+    while (( SECONDS < deadline )); do
+        if ! kill -0 "$PID" 2>/dev/null; then
+            local exit_code
+            set +e
+            wait "$PID"
+            exit_code=$?
+            set -e
+            PID=""
+            dump_binary_log
+            fail "Binary (${desc}) exited during startup (exit code ${exit_code})"
+            summary
+            exit 1
+        fi
+        if curl -sf --max-time 1 "$BASE/health" >/dev/null 2>&1; then
+            READY=1
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+}
+
 echo "=== Discord Proxy RPC - E2E Tests ==="
 echo ""
 
@@ -97,6 +127,7 @@ PROXY_DISCORD_AUTO_RECONNECT="false" \
 PROXY_SERVER_HOST="127.0.0.1" \
 PROXY_SERVER_PORT="$PORT" \
 PROXY_SERVER_WS_PATH="/ws" \
+PROXY_SERVER_RATE_LIMIT_PER_IP="1000" \
 PROXY_AUTH_ENABLED="false" \
 PROXY_MDNS_ENABLED="false" \
 PROXY_LOGGING_LEVEL="error" \
@@ -106,29 +137,7 @@ PID=$!
 
 BASE="http://127.0.0.1:${PORT}"
 
-echo "  Waiting up to ${STARTUP_TIMEOUT}s for server on port ${PORT}..."
-READY=0
-DEADLINE=$((SECONDS + STARTUP_TIMEOUT))
-while (( SECONDS < DEADLINE )); do
-    if ! kill -0 "$PID" 2>/dev/null; then
-        set +e
-        wait "$PID"
-        exit_code=$?
-        set -e
-        PID=""
-        dump_binary_log
-        fail "Binary exited during startup (exit code ${exit_code})"
-        summary
-        exit 1
-    fi
-    if curl -sf --max-time 1 "$BASE/health" >/dev/null 2>&1; then
-        READY=1
-        break
-    fi
-    sleep 0.5
-done
-
-if [[ "$READY" -eq 1 ]]; then
+if wait_for_ready "server"; then
     pass "Server became ready on port ${PORT}"
 
     HEALTH=$(curl -sf "$BASE/health" || true)
@@ -191,6 +200,7 @@ PROXY_DISCORD_AUTO_RECONNECT="false" \
 PROXY_SERVER_HOST="127.0.0.1" \
 PROXY_SERVER_PORT="$PORT" \
 PROXY_SERVER_WS_PATH="/ws" \
+PROXY_SERVER_RATE_LIMIT_PER_IP="1000" \
 PROXY_AUTH_ENABLED="true" \
 PROXY_AUTH_TOKEN="$AUTH_TOKEN" \
 PROXY_MDNS_ENABLED="false" \
@@ -199,29 +209,7 @@ PROXY_LOGGING_FORMAT="console" \
     "$BINARY" >"$BINARY_LOG" 2>&1 &
 PID=$!
 
-echo "  Waiting up to ${STARTUP_TIMEOUT}s for auth-enabled server on port ${PORT}..."
-READY=0
-DEADLINE=$((SECONDS + STARTUP_TIMEOUT))
-while (( SECONDS < DEADLINE )); do
-    if ! kill -0 "$PID" 2>/dev/null; then
-        set +e
-        wait "$PID"
-        exit_code=$?
-        set -e
-        PID=""
-        dump_binary_log
-        fail "Binary (auth-enabled) exited during startup (exit code ${exit_code})"
-        summary
-        exit 1
-    fi
-    if curl -sf --max-time 1 "$BASE/health" >/dev/null 2>&1; then
-        READY=1
-        break
-    fi
-    sleep 0.5
-done
-
-if [[ "$READY" -eq 1 ]]; then
+if wait_for_ready "auth-enabled server"; then
     pass "Auth-enabled server became ready on port ${PORT}"
 
     for ep in /health /healthz; do
@@ -281,6 +269,82 @@ if [[ "$READY" -eq 1 ]]; then
 else
     dump_binary_log
     fail "Auth-enabled server did not become ready on port ${PORT} within ${STARTUP_TIMEOUT}s"
+    summary
+    exit 1
+fi
+
+kill "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true
+PID=""
+echo ""
+
+# --- Phase 4c: Binary E2E (rate limiting) ---
+# The smoke phases above run with a pinned, generous budget so they assert
+# other behaviour. This phase drives the real limiter: two requests pass, the
+# third gets 429 with Retry-After, and health probes stay exempt.
+echo "--- Phase 4c: Binary E2E (rate limiting) ---"
+
+rm -f "$BINARY_LOG" "$COOKIE_JAR"
+
+PROXY_DISCORD_CLIENT_ID="000000000000000000" \
+PROXY_DISCORD_AUTO_RECONNECT="false" \
+PROXY_SERVER_HOST="127.0.0.1" \
+PROXY_SERVER_PORT="$PORT" \
+PROXY_SERVER_WS_PATH="/ws" \
+PROXY_SERVER_RATE_LIMIT_PER_IP="2" \
+PROXY_SERVER_RATE_LIMIT_WINDOW="30s" \
+PROXY_AUTH_ENABLED="false" \
+PROXY_MDNS_ENABLED="false" \
+PROXY_LOGGING_LEVEL="error" \
+PROXY_LOGGING_FORMAT="console" \
+    "$BINARY" >"$BINARY_LOG" 2>&1 &
+PID=$!
+
+if wait_for_ready "rate-limited server"; then
+    pass "Rate-limited server became ready on port ${PORT}"
+
+    for i in 1 2; do
+        CODE=$(http_code "$BASE/api/presence")
+        if [[ "$CODE" == "200" ]]; then
+            pass "/api/presence within the budget returns 200 (request ${i})"
+        else
+            fail "/api/presence within the budget returned ${CODE}, want 200"
+        fi
+    done
+
+    HEADERS=$(curl -s -D - -o /dev/null --max-time 5 "$BASE/api/presence" || true)
+    if echo "$HEADERS" | grep -q "^HTTP/.* 429"; then
+        pass "/api/presence over the budget returns 429"
+    else
+        fail "/api/presence over the budget did not return 429"
+    fi
+    if echo "$HEADERS" | grep -qi "^retry-after: [0-9][0-9]*"; then
+        pass "429 carries a Retry-After in seconds"
+    else
+        fail "429 is missing a Retry-After header"
+    fi
+    if echo "$HEADERS" | grep -qi "^cache-control: no-store"; then
+        pass "429 is marked uncacheable"
+    else
+        fail "429 is missing Cache-Control: no-store"
+    fi
+
+    BODY=$(curl -s --max-time 5 "$BASE/" || true)
+    if echo "$BODY" | grep -q "rate limit exceeded"; then
+        pass "dashboard 429 answers plain text a browser can render"
+    else
+        fail "dashboard 429 body is not the plain-text rejection: ${BODY:-<no response>}"
+    fi
+
+    CODE=$(http_code "$BASE/health")
+    if [[ "$CODE" == "200" ]]; then
+        pass "/health stays exempt from the rate limit"
+    else
+        fail "/health returned ${CODE} while rate limited, want 200"
+    fi
+else
+    dump_binary_log
+    fail "Rate-limited server did not become ready on port ${PORT} within ${STARTUP_TIMEOUT}s"
     summary
     exit 1
 fi

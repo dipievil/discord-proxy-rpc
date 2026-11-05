@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,14 @@ type ServerConfig struct {
 	MaxWSConnections int           `mapstructure:"max_ws_connections" yaml:"max_ws_connections"`
 	RateLimitPerIP   int           `mapstructure:"rate_limit_per_ip"  yaml:"rate_limit_per_ip"`
 	RateLimitWindow  time.Duration `mapstructure:"rate_limit_window"  yaml:"rate_limit_window"`
+	TrustedProxies   []string      `mapstructure:"trusted_proxies"    yaml:"trusted_proxies"`
 }
+
+// DefaultRateLimitPerIP is the shipped per-IP request budget. One dashboard
+// load costs four requests (index.html, style.css, app.js and the WebSocket
+// upgrade) and a reconnecting tab adds a few more, so the default leaves room
+// for reloads instead of letting the primary UI trip its own limiter.
+const DefaultRateLimitPerIP = 60
 
 type AuthConfig struct {
 	Enabled bool   `mapstructure:"enabled" yaml:"enabled"`
@@ -78,8 +86,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.read_timeout", 10*time.Second)
 	v.SetDefault("server.write_timeout", 10*time.Second)
 	v.SetDefault("server.max_ws_connections", 100)
-	v.SetDefault("server.rate_limit_per_ip", 10)
+	v.SetDefault("server.rate_limit_per_ip", DefaultRateLimitPerIP)
 	v.SetDefault("server.rate_limit_window", time.Minute)
+	v.SetDefault("server.trusted_proxies", []string{})
 
 	v.SetDefault("auth.enabled", false)
 	v.SetDefault("auth.token", "")
@@ -115,6 +124,7 @@ func setupEnv(v *viper.Viper) {
 	_ = v.BindEnv("server.max_ws_connections", "PROXY_SERVER_MAX_WS_CONNECTIONS")
 	_ = v.BindEnv("server.rate_limit_per_ip", "PROXY_SERVER_RATE_LIMIT_PER_IP")
 	_ = v.BindEnv("server.rate_limit_window", "PROXY_SERVER_RATE_LIMIT_WINDOW")
+	_ = v.BindEnv("server.trusted_proxies", "PROXY_SERVER_TRUSTED_PROXIES")
 
 	_ = v.BindEnv("auth.enabled", "PROXY_AUTH_ENABLED")
 	_ = v.BindEnv("auth.token", "PROXY_AUTH_TOKEN")
@@ -181,6 +191,14 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("discord.client_id %q is not a valid Discord Application ID: expected digits only (Discord Developer Portal > General Information > Application ID)", id)
 	}
 	c.Discord.ClientID = id
+
+	for i, entry := range c.Server.TrustedProxies {
+		network := strings.TrimSpace(entry)
+		if _, _, err := net.ParseCIDR(network); err != nil {
+			return fmt.Errorf("server.trusted_proxies entry %q is not a CIDR block: expected e.g. 10.0.0.0/8 or 192.168.0.0/24", entry)
+		}
+		c.Server.TrustedProxies[i] = network
+	}
 
 	return nil
 }
