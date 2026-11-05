@@ -367,7 +367,7 @@ PROXY_HOST=192.168.0.103 PROXY_PORT=8765 PROXY_AUTH_TOKEN=<your-token> bin/disco
 
 ## System Tray Indicator
 
-On Linux desktops, `discord-proxy-tray` puts a status icon in the system tray so you can see at a glance whether the proxy can reach Discord. It publishes a **StatusNotifierItem** on the D-Bus session bus — the freedesktop/KDE tray protocol used by KDE, Xfce and GNOME's AppIndicator extension — so it needs no GTK, no cgo and no icon theme. The status icons are generated pixmaps embedded in the binary.
+On Linux desktops, `discord-proxy-tray` puts a status icon in the system tray so you can see at a glance whether the proxy can reach Discord. It publishes a **StatusNotifierItem** on the D-Bus session bus — the freedesktop/KDE tray protocol used by KDE, Xfce and GNOME's AppIndicator extension — so it needs no GTK, no cgo and no icon theme. The status icons are drawn at runtime, so the binary carries no asset files either.
 
 Build it with:
 
