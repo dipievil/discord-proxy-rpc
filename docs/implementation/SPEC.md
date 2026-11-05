@@ -156,9 +156,9 @@ The server echoes the offered `proxy-token-*` subprotocol back on success so the
 
 `payload` on `presence` and `current` is a **presence snapshot** (see [Activity source](#activity-source)); `activity` is `null` whenever `source` is `"none"`. `client_id` (the Discord Application ID from `discord.client_id`) is always included on `state` and `current` messages — it is required at startup (task 9.3) — so clients can identify which Discord account the proxy is attached to.
 
-**State on subscribe.** A `subscribe` that includes `state` is answered with one `state` frame carrying the proxy's current IPC state, mapped from `/api/state` (`connected`, `reconnecting`, or `disconnected`), before any later push. The frame goes only to the subscribing client and includes `client_id`. A client must not infer IPC connectivity from the WebSocket being open: an open socket only means the proxy accepted the connection.
+**State on subscribe.** A `subscribe` that includes `state` is answered with one `state` frame carrying the proxy's current IPC state, mapped from `/api/state` (`connected`, `reconnecting`, or `disconnected`), before any later push. The snapshot is produced by the same fan-out loop that delivers state pushes, so an older transition can never overtake it and leave the client on a stale state. The frame goes only to the subscribing client and includes `client_id`. A client must not infer IPC connectivity from the WebSocket being open: an open socket only means the proxy accepted the connection.
 
-**Terminal state.** `reconnecting` means the proxy will attempt another IPC session. When no further session will be attempted — `discord.auto_reconnect: false`, reconnect attempts exhausted, or the IPC client stopped for another reason — the proxy emits exactly one final `disconnected` and stops broadcasting `reconnecting`.
+**Terminal state.** `reconnecting` means the proxy will attempt another IPC session. When no further session will be attempted — `discord.auto_reconnect: false`, reconnect attempts exhausted, or the IPC client stopped for another reason — the proxy emits exactly one final `disconnected` and stops broadcasting `reconnecting`. That frame is queued with a blocking send, so a full broadcast buffer delays it instead of dropping it.
 
 **Client → Server**
 

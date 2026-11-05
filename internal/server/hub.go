@@ -33,12 +33,23 @@ type Client struct {
 	Done       chan struct{}
 }
 
+// stateSnapshotRequest asks the fan-out loop for a state snapshot. done is
+// closed once the snapshot is queued for the client, so the requester knows
+// nothing it sends afterwards can overtake it.
+type stateSnapshotRequest struct {
+	client *Client
+	done   chan struct{}
+}
+
 type Hub struct {
-	clients            map[string]*Client
-	mu                 sync.RWMutex
-	register           chan *Client
-	unregister         chan *Client
-	broadcast          chan ServerMessage
+	clients     map[string]*Client
+	mu          sync.RWMutex
+	register    chan *Client
+	unregister  chan *Client
+	broadcast   chan ServerMessage
+	// stateSnapshots answers state subscriptions from the fan-out loop, so a
+	// snapshot is ordered against state broadcasts.
+	stateSnapshots     chan stateSnapshotRequest
 	logger             *zap.Logger
 	done               chan struct{}
 	doneOnce           sync.Once
@@ -51,12 +62,13 @@ type Hub struct {
 
 func NewHub(logger *zap.Logger) *Hub {
 	return &Hub{
-		clients:    make(map[string]*Client),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		broadcast:  make(chan ServerMessage, 256),
-		logger:     logger,
-		done:       make(chan struct{}),
+		clients:        make(map[string]*Client),
+		register:       make(chan *Client),
+		unregister:     make(chan *Client),
+		broadcast:      make(chan ServerMessage, 256),
+		stateSnapshots: make(chan stateSnapshotRequest),
+		logger:         logger,
+		done:           make(chan struct{}),
 	}
 }
 
@@ -107,6 +119,18 @@ func (h *Hub) Run(ctx context.Context) {
 				}
 			}
 			h.mu.RUnlock()
+		case req := <-h.stateSnapshots:
+			h.mu.Lock()
+			if _, ok := h.clients[req.client.id]; ok && h.GetCurrentState != nil {
+				data, err := json.Marshal(NewStateMessage(h.GetCurrentState(), h.ClientID))
+				if err != nil {
+					h.logger.Error("failed to marshal state snapshot", zap.Error(fmt.Errorf("marshal state snapshot: %w", err)))
+				} else {
+					req.client.SendMessage(data)
+				}
+			}
+			h.mu.Unlock()
+			close(req.done)
 		}
 	}
 }
@@ -130,6 +154,36 @@ func (h *Hub) Broadcast(msg ServerMessage) {
 	case h.broadcast <- msg:
 	default:
 		h.logger.Warn("broadcast channel full, dropping message")
+	}
+}
+
+// BroadcastWait delivers msg to the fan-out loop, waiting while the queue is
+// full. It reports false when the hub is closed or ctx is done, so a terminal
+// message is not lost to back-pressure.
+func (h *Hub) BroadcastWait(ctx context.Context, msg ServerMessage) bool {
+	select {
+	case h.broadcast <- msg:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-h.done:
+		return false
+	}
+}
+
+// SendStateSnapshot answers a state subscription with the current state. The
+// request is handled by the fan-out loop, so the snapshot is ordered against
+// state broadcasts, and it is queued before this call returns, so a later
+// message cannot overtake it.
+func (h *Hub) SendStateSnapshot(c *Client) {
+	req := stateSnapshotRequest{client: c, done: make(chan struct{})}
+	select {
+	case h.stateSnapshots <- req:
+		select {
+		case <-req.done:
+		case <-h.done:
+		}
+	case <-h.done:
 	}
 }
 
@@ -220,7 +274,9 @@ func (c *Client) ReadPump() {
 			}
 			c.mu.Unlock()
 			c.hub.logger.Debug("client subscribed", zap.String("client", c.id), zap.Strings("events", msg.SubscribeEvents))
-			c.sendStateSnapshot(msg.SubscribeEvents)
+			if slices.Contains(msg.SubscribeEvents, MsgTypeState) {
+				c.hub.SendStateSnapshot(c)
+			}
 		case MsgTypeGetCurrent:
 			if c.hub.GetCurrentPresence != nil {
 				snapshot := c.hub.GetCurrentPresence()
@@ -294,20 +350,4 @@ func (c *Client) subscribe(events ...string) {
 	for _, e := range events {
 		c.events[e] = true
 	}
-}
-
-// sendStateSnapshot answers a state subscription with the current connection
-// state, so a client learns the real IPC state right away instead of assuming
-// an open WebSocket means Discord is connected.
-func (c *Client) sendStateSnapshot(subscribed []string) {
-	if c.hub.GetCurrentState == nil || !slices.Contains(subscribed, MsgTypeState) {
-		return
-	}
-
-	data, err := json.Marshal(NewStateMessage(c.hub.GetCurrentState(), c.hub.ClientID))
-	if err != nil {
-		c.hub.logger.Error("failed to marshal state snapshot", zap.Error(err))
-		return
-	}
-	c.SendMessage(data)
 }

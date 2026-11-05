@@ -131,12 +131,12 @@ func waitForClientCount(t *testing.T, hub *server.Hub, want int) {
 	t.Fatalf("ClientCount = %d, want %d", hub.ClientCount(), want)
 }
 
-func startEventLoop(t *testing.T, source ipcEventSource, hub *server.Hub, ipcDone <-chan struct{}) <-chan struct{} {
+func startEventLoop(t *testing.T, ctx context.Context, source ipcEventSource, hub *server.Hub, ipcDone <-chan struct{}) <-chan struct{} {
 	t.Helper()
 	loopDone := make(chan struct{})
 	go func() {
 		defer close(loopDone)
-		runIPCEventLoop(context.Background(), source, state.NewPresence(0, zap.NewNop()), hub, ipcDone, zap.NewNop())
+		runIPCEventLoop(ctx, source, state.NewPresence(0, zap.NewNop()), hub, ipcDone, zap.NewNop())
 	}()
 	return loopDone
 }
@@ -145,7 +145,7 @@ func TestRunIPCEventLoopEmitsTerminalDisconnected(t *testing.T) {
 	hub, conn := newStateObserver(t)
 	source := newFakeIPCSource()
 	ipcDone := make(chan struct{})
-	loopDone := startEventLoop(t, source, hub, ipcDone)
+	loopDone := startEventLoop(t, context.Background(), source, hub, ipcDone)
 
 	if msg := readServerMessage(t, conn); msg.Status != server.StateConnected {
 		t.Fatalf("first status = %q, want %q", msg.Status, server.StateConnected)
@@ -173,7 +173,7 @@ func TestRunIPCEventLoopKeepsReconnectingWhileReconnectPending(t *testing.T) {
 	hub, conn := newStateObserver(t)
 	source := newFakeIPCSource()
 	ipcDone := make(chan struct{})
-	loopDone := startEventLoop(t, source, hub, ipcDone)
+	loopDone := startEventLoop(t, context.Background(), source, hub, ipcDone)
 
 	if msg := readServerMessage(t, conn); msg.Status != server.StateConnected {
 		t.Fatalf("first status = %q, want %q", msg.Status, server.StateConnected)
@@ -200,5 +200,40 @@ func TestRunIPCEventLoopKeepsReconnectingWhileReconnectPending(t *testing.T) {
 	case <-loopDone:
 	case <-time.After(3 * time.Second):
 		t.Fatal("event loop did not return after the terminal disconnected")
+	}
+}
+
+// A cancelled context wins over ipcDone: shutdown must not announce a terminal
+// state to clients the hub is closing.
+func TestRunIPCEventLoopCancelledDoesNotEmitTerminalState(t *testing.T) {
+	hub, conn := newStateObserver(t)
+	source := newFakeIPCSource()
+	ipcDone := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	loopDone := startEventLoop(t, ctx, source, hub, ipcDone)
+
+	if msg := readServerMessage(t, conn); msg.Status != server.StateConnected {
+		t.Fatalf("first status = %q, want %q", msg.Status, server.StateConnected)
+	}
+
+	// The session end still announces reconnecting; the terminal frame must not
+	// follow it once the context is cancelled.
+	source.endSession()
+	if msg := readServerMessage(t, conn); msg.Status != server.StateReconnecting {
+		t.Fatalf("status after session end = %q, want %q", msg.Status, server.StateReconnecting)
+	}
+	cancel()
+	close(ipcDone)
+
+	select {
+	case <-loopDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("event loop did not return")
+	}
+
+	conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("received a terminal state frame after cancellation")
 	}
 }
