@@ -251,7 +251,7 @@ server:
   read_timeout: 10s                      # HTTP read timeout
   write_timeout: 10s                     # HTTP write timeout
   max_ws_connections: 100                # Cap on concurrent WebSocket clients
-  rate_limit_per_ip: 10                  # Max WS upgrades per IP within the window
+  rate_limit_per_ip: 10                  # Max requests per IP within the window (dashboard, REST, WS)
   rate_limit_window: 1m                  # Rate-limit window
 
 auth:
@@ -384,6 +384,8 @@ PROXY_HOST=192.168.0.103 PROXY_PORT=8765 PROXY_AUTH_TOKEN=<your-token> bin/disco
 - `/readyz` — Readiness probe for Kubernetes; returns 200 only when IPC is connected, 503 otherwise
 
 **Access control:** with `auth.enabled: true`, `/`, `/index.html`, the static assets, `/api/presence` and `/api/state` require the token (`Authorization: Bearer <token>` or `?token=<token>`); an unauthenticated request gets HTTP 401 — a JSON `AUTH_001` body on `/api/*`, plain text on the dashboard. `/health`, `/healthz` and `/readyz` are never auth-gated.
+
+**Rate limiting:** the per-IP limiter (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 10 requests per minute) covers the dashboard and its static assets, `/api/presence`, `/api/state` and the WebSocket upgrade. All of them share one budget per client IP, and the check runs before auth, so a flood is rejected before the token comparison. A request over the limit gets HTTP 429 with the `REQ_002` JSON envelope and a `Retry-After` header carrying the remaining seconds of the window. `/health`, `/healthz`, `/readyz` and `/metrics` are exempt so container probes and Prometheus scrapes keep answering while an IP is limited. Setting `server.rate_limit_per_ip` to `0` or a negative value disables limiting (a non-positive window does too). A dashboard page load costs several requests (HTML, CSS, JS and the WebSocket upgrade), so the default budget allows only a couple of reloads per minute from one IP; raise `rate_limit_per_ip` if the UI is used heavily behind one NAT address.
 
 #### Kubernetes Probes
 

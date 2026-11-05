@@ -130,9 +130,11 @@ When `metrics.enabled: true`, the server registers `/metrics` (Prometheus text f
 | `discord_proxy_ws_connected_clients` | gauge | `Hub.ClientCount()` at scrape time |
 | `discord_proxy_presence_coalesced_sends_total` | counter | presence subscription callback (fires once per coalesced flush) |
 | `discord_proxy_ipc_connected` | gauge (0/1) | IPC state getter at scrape time (`connected` ⇒ 1) |
-| `discord_proxy_rate_limit_rejections_total` | counter | `RateLimiter` denial counter |
+| `discord_proxy_rate_limit_rejections_total` | counter | `RateLimiter` denial counter (dashboard, REST and WS rejections) |
 
 **Access control:** when `auth.enabled: true`, `/`, `/index.html`, the embedded static assets, `/api/presence` and `/api/state` require the bearer token; `/health`, `/healthz` and `/readyz` stay open so probes work without credentials. API routes answer an unauthenticated request with the `AUTH_001` JSON envelope (HTTP 401), while the dashboard answers a plain-text 401.
+
+**Rate limiting:** a single per-IP limiter (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 10 requests per minute) guards the dashboard and its static assets, `/api/presence`, `/api/state` and the WebSocket upgrade; all routes share one budget per IP. The middleware runs before auth so unauthenticated floods are rejected without the constant-time token comparison. Rejections answer HTTP 429 with the `REQ_002` envelope and a `Retry-After` header in whole seconds, and increment `discord_proxy_rate_limit_rejections_total`. `/health`, `/healthz`, `/readyz` and `/metrics` are deliberately registered without the middleware: probes and Prometheus scrapes must keep working while an IP is limited, and they are not useful amplification targets. A limiter that is `nil` or has a non-positive rate or window is disabled.
 
 #### WebSocket Protocol
 
@@ -177,10 +179,10 @@ Error frames are sent in direct response to a client message that could not be p
 | `MSG_001` | `ErrCodeInvalidMessage` | Malformed JSON, missing/unknown `type`, unknown event in `subscribe`, or any parse failure |
 | `INT_001` | `ErrCodeInternal` | Internal server error (including a recovered panic) |
 | `REQ_001` | `ErrCodePayloadTooLarge` | Request body exceeds the 1 MiB cap (HTTP 413) |
-| `REQ_002` | `ErrCodeRateLimited` | WS upgrade rate limit exceeded (HTTP 429) |
+| `REQ_002` | `ErrCodeRateLimited` | Request rate limit exceeded on the dashboard, REST or WS upgrade (HTTP 429, with `Retry-After`) |
 | `REQ_003` | `ErrCodeTooManyConns` | Max concurrent WS connections reached (HTTP 503) |
 
-HTTP-level errors (auth failure, oversized body, rate limit, connection cap, recovered panic) use the same codes in a top-level JSON envelope: `{ "code": "<CODE>", "error": "<message>" }`. WS `error` frames instead nest them under `payload` as `{ "code", "message" }`.
+HTTP-level errors (auth failure, oversized body, rate limit, connection cap, recovered panic) use the same codes in a top-level JSON envelope: `{ "code": "<CODE>", "error": "<message>" }`. A rate-limit rejection also carries `Retry-After` with the remaining seconds in the current window. WS `error` frames instead nest them under `payload` as `{ "code", "message" }`.
 
 **Presence Snapshot** (payload of `presence` / `current` and body of `/api/presence`)
 
@@ -275,7 +277,7 @@ server:
   read_timeout: 10s
   write_timeout: 10s
   max_ws_connections: 100    # cap on concurrent WebSocket clients
-  rate_limit_per_ip: 10      # max WS upgrades per IP within the window
+  rate_limit_per_ip: 10      # max requests per IP within the window (dashboard, REST, WS)
   rate_limit_window: 1m      # rate-limit window
 
 auth:
@@ -474,7 +476,7 @@ ENTRYPOINT ["discord-proxy"]
 - **Read-only**: No `SET_ACTIVITY` command exposed
 - **LAN only**: Binds to `0.0.0.0` by default; restrict via firewall or `host: "127.0.0.1"` + VPN (Tailscale)
 - **Optional token auth**: Enable `auth.enabled: true` + set `PROXY_AUTH_TOKEN` for shared-secret auth on the WS upgrade, REST endpoints, and dashboard; comparison is constant-time. Health probes (`/health`, `/healthz`, `/readyz`) stay unauthenticated so container/k8s probes keep working. The legacy `PROXY_TOKEN` env var was removed in task 9.6 — `PROXY_AUTH_TOKEN` is the sole env source
-- **WS rate limiting**: Per-IP limiter on WS upgrades (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 10 upgrades per minute per IP); excess upgrades get HTTP 429 `REQ_002`
+- **Per-IP rate limiting** -- `server.rate_limit_per_ip` / `server.rate_limit_window` (defaults: 10 requests per minute) throttle the dashboard, the REST endpoints (`/api/*`) and the WebSocket upgrade from one client IP, sharing a single budget. Excess requests get HTTP 429 `REQ_002` with a `Retry-After` header. `/health`, `/healthz`, `/readyz` and `/metrics` are exempt so probes and scrapes keep working. Set the rate to `0` to disable it.
 - **Max WS connections**: Concurrent client cap (`server.max_ws_connections`, default 100); excess upgrades get HTTP 503 `REQ_003`
 - **Request body cap**: Requests declaring `Content-Length` over 1 MiB are rejected with HTTP 413 `REQ_001`; unknown-length (chunked) bodies are capped via `MaxBytesReader`, so any read past 1 MiB fails. The current handlers never read request bodies (all routes are read-only), so an oversized chunked body is ignored rather than rejected with 413
 - **Panic recovery**: `RecoveryMiddleware` wraps the HTTP mux (plus an inner recover in the WS handler); a panicking handler returns HTTP 500 `INT_001` instead of crashing the process
