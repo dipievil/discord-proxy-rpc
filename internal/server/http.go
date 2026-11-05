@@ -120,6 +120,7 @@ func NewServer(hub *Hub, logger *zap.Logger, opts ...ServerOption) *Server {
 	}
 
 	s.hub.GetCurrentPresence = s.getCurrentPresence
+	s.hub.GetCurrentState = func() ConnectionState { return connectionStateFromIPC(s.getIPCState()) }
 
 	s.registerRoutes()
 	return s
@@ -358,6 +359,20 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]string{"status": state}); err != nil {
 		s.logger.Error("failed to encode state response", zap.Error(err))
+	}
+}
+
+// connectionStateFromIPC maps the IPC client's state string (/api/state) onto
+// the connection states the WebSocket protocol carries. A dial in progress has
+// no WebSocket equivalent yet and is reported as reconnecting.
+func connectionStateFromIPC(state string) ConnectionState {
+	switch state {
+	case string(StateConnected):
+		return StateConnected
+	case string(StateReconnecting), "connecting":
+		return StateReconnecting
+	default:
+		return StateDisconnected
 	}
 }
 

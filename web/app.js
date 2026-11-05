@@ -154,8 +154,10 @@
         ws.onopen = function () {
             console.log('[Dashboard] Connected to proxy');
             reconnectDelay = WS_RECONNECT_BASE;
-            updateConnectionStatus('connected');
 
+            // The status indicator follows the proxy's IPC link, not the
+            // WebSocket: an open socket does not mean Discord is reachable.
+            // The state snapshot that answers this subscription sets it.
             ws.send(JSON.stringify({
                 type: 'subscribe',
                 events: ['presence', 'state']
