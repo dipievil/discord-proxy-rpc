@@ -157,6 +157,10 @@ func runIPCEventLoop(ctx context.Context, source ipcEventSource, presence *state
 			case <-ctx.Done():
 				return
 			case <-ipcDone:
+				if ctx.Err() != nil {
+					return
+				}
+				logger.Info("IPC session ended and will not reconnect")
 				hub.Broadcast(server.NewStateMessage(server.StateDisconnected))
 				return
 			case <-time.After(500 * time.Millisecond):
