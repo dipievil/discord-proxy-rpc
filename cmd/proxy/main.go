@@ -95,8 +95,17 @@ func main() {
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}
 
-	go runIPCEventLoop(ctx, client, presence, hub, logger)
-	go client.RunWithReconnect(ctx, cfg.Discord)
+	// ipcDone is closed once the IPC client gives up, i.e. when no further
+	// session will be attempted; the event loop turns that into one terminal
+	// disconnected state for WebSocket clients.
+	ipcDone := make(chan struct{})
+	go runIPCEventLoop(ctx, client, presence, hub, ipcDone, logger)
+	go func() {
+		defer close(ipcDone)
+		if err := client.RunWithReconnect(ctx, cfg.Discord); err != nil && ctx.Err() == nil {
+			logger.Warn("IPC client stopped", zap.Error(err))
+		}
+	}()
 
 	if cfg.Mdns.Enabled {
 		adv, err := mdns.NewAdvertiser(cfg.Mdns, cfg.Server.Port, logger)
@@ -130,12 +139,25 @@ func main() {
 	client.Close()
 }
 
-func runIPCEventLoop(ctx context.Context, client *ipc.Client, presence *state.Presence, hub *server.Hub, logger *zap.Logger) {
+// ipcEventSource is the part of the IPC client the event loop depends on, so
+// the loop can be driven by a test without a live Discord socket.
+type ipcEventSource interface {
+	Events() <-chan ipc.Event
+}
+
+// runIPCEventLoop mirrors IPC session events into the presence state machine and
+// the WebSocket hub. A session end is announced as reconnecting; when ipcDone
+// reports that no further session will be attempted, the loop broadcasts one
+// terminal disconnected instead and returns.
+func runIPCEventLoop(ctx context.Context, source ipcEventSource, presence *state.Presence, hub *server.Hub, ipcDone <-chan struct{}, logger *zap.Logger) {
 	for {
-		events := client.Events()
+		events := source.Events()
 		if events == nil {
 			select {
 			case <-ctx.Done():
+				return
+			case <-ipcDone:
+				hub.Broadcast(server.NewStateMessage(server.StateDisconnected))
 				return
 			case <-time.After(500 * time.Millisecond):
 			}

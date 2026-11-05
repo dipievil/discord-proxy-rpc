@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -43,6 +44,9 @@ type Hub struct {
 	doneOnce           sync.Once
 	ClientID           string
 	GetCurrentPresence func() types.PresenceSnapshot
+	// GetCurrentState supplies the snapshot a state subscription is answered
+	// with; nil disables the snapshot.
+	GetCurrentState func() ConnectionState
 }
 
 func NewHub(logger *zap.Logger) *Hub {
@@ -216,6 +220,7 @@ func (c *Client) ReadPump() {
 			}
 			c.mu.Unlock()
 			c.hub.logger.Debug("client subscribed", zap.String("client", c.id), zap.Strings("events", msg.SubscribeEvents))
+			c.sendStateSnapshot(msg.SubscribeEvents)
 		case MsgTypeGetCurrent:
 			if c.hub.GetCurrentPresence != nil {
 				snapshot := c.hub.GetCurrentPresence()
@@ -289,4 +294,20 @@ func (c *Client) subscribe(events ...string) {
 	for _, e := range events {
 		c.events[e] = true
 	}
+}
+
+// sendStateSnapshot answers a state subscription with the current connection
+// state, so a client learns the real IPC state right away instead of assuming
+// an open WebSocket means Discord is connected.
+func (c *Client) sendStateSnapshot(subscribed []string) {
+	if c.hub.GetCurrentState == nil || !slices.Contains(subscribed, MsgTypeState) {
+		return
+	}
+
+	data, err := json.Marshal(NewStateMessage(c.hub.GetCurrentState(), c.hub.ClientID))
+	if err != nil {
+		c.hub.logger.Error("failed to marshal state snapshot", zap.Error(err))
+		return
+	}
+	c.SendMessage(data)
 }
