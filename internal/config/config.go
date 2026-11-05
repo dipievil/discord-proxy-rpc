@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
@@ -24,6 +26,42 @@ type DiscordConfig struct {
 	CoalesceInterval      time.Duration `mapstructure:"coalesce_interval"       yaml:"coalesce_interval"`
 }
 
+// TLS transport modes reported by TLSConfig.Mode and advertised over mDNS.
+const (
+	TLSModeOff    = "off"
+	TLSModeServer = "server"
+	TLSModeMTLS   = "mtls"
+)
+
+// TLSConfig controls the HTTPS listener. Enabled alone serves server-side TLS;
+// setting ClientCAFile additionally requires and verifies a client certificate
+// (mTLS), which replaces bearer-token auth.
+type TLSConfig struct {
+	Enabled      bool   `mapstructure:"enabled"        yaml:"enabled"`
+	CertFile     string `mapstructure:"cert_file"      yaml:"cert_file"`
+	KeyFile      string `mapstructure:"key_file"       yaml:"key_file"`
+	ClientCAFile string `mapstructure:"client_ca_file" yaml:"client_ca_file"`
+}
+
+// MTLSEnabled reports whether clients must present a certificate signed by
+// ClientCAFile.
+func (t TLSConfig) MTLSEnabled() bool {
+	return t.Enabled && t.ClientCAFile != ""
+}
+
+// Mode names the transport authentication mode: TLSModeOff, TLSModeServer or
+// TLSModeMTLS.
+func (t TLSConfig) Mode() string {
+	switch {
+	case !t.Enabled:
+		return TLSModeOff
+	case t.ClientCAFile != "":
+		return TLSModeMTLS
+	default:
+		return TLSModeServer
+	}
+}
+
 type ServerConfig struct {
 	Host             string        `mapstructure:"host"              yaml:"host"`
 	Port             int           `mapstructure:"port"              yaml:"port"`
@@ -34,6 +72,7 @@ type ServerConfig struct {
 	RateLimitPerIP   int           `mapstructure:"rate_limit_per_ip"  yaml:"rate_limit_per_ip"`
 	RateLimitWindow  time.Duration `mapstructure:"rate_limit_window"  yaml:"rate_limit_window"`
 	TrustedProxies   []string      `mapstructure:"trusted_proxies"    yaml:"trusted_proxies"`
+	TLS              TLSConfig     `mapstructure:"tls"               yaml:"tls"`
 }
 
 // DefaultRateLimitPerIP is the shipped per-IP request budget. One dashboard
@@ -90,6 +129,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.rate_limit_window", time.Minute)
 	v.SetDefault("server.trusted_proxies", []string{})
 
+	v.SetDefault("server.tls.enabled", false)
+	v.SetDefault("server.tls.cert_file", "")
+	v.SetDefault("server.tls.key_file", "")
+	v.SetDefault("server.tls.client_ca_file", "")
+
 	v.SetDefault("auth.enabled", false)
 	v.SetDefault("auth.token", "")
 
@@ -125,6 +169,11 @@ func setupEnv(v *viper.Viper) {
 	_ = v.BindEnv("server.rate_limit_per_ip", "PROXY_SERVER_RATE_LIMIT_PER_IP")
 	_ = v.BindEnv("server.rate_limit_window", "PROXY_SERVER_RATE_LIMIT_WINDOW")
 	_ = v.BindEnv("server.trusted_proxies", "PROXY_SERVER_TRUSTED_PROXIES")
+
+	_ = v.BindEnv("server.tls.enabled", "PROXY_TLS_ENABLED")
+	_ = v.BindEnv("server.tls.cert_file", "PROXY_TLS_CERT_FILE")
+	_ = v.BindEnv("server.tls.key_file", "PROXY_TLS_KEY_FILE")
+	_ = v.BindEnv("server.tls.client_ca_file", "PROXY_TLS_CLIENT_CA_FILE")
 
 	_ = v.BindEnv("auth.enabled", "PROXY_AUTH_ENABLED")
 	_ = v.BindEnv("auth.token", "PROXY_AUTH_TOKEN")
@@ -198,6 +247,52 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("server.trusted_proxies entry %q is not a CIDR block: expected e.g. 10.0.0.0/8 or 192.168.0.0/24", entry)
 		}
 		c.Server.TrustedProxies[i] = network
+	}
+
+	if err := c.validateTLS(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateTLS rejects an inconsistent TLS configuration at load time. Certificate
+// material is parsed here so a bad path or an invalid PEM fails at startup with
+// the offending file named, never as a silent fallback to plaintext.
+func (c *Config) validateTLS() error {
+	tlsCfg := c.Server.TLS
+
+	if !tlsCfg.Enabled {
+		if tlsCfg.CertFile != "" || tlsCfg.KeyFile != "" || tlsCfg.ClientCAFile != "" {
+			return errors.New("server.tls.cert_file, server.tls.key_file or server.tls.client_ca_file is set while server.tls.enabled is false: set server.tls.enabled: true (PROXY_TLS_ENABLED) or remove the certificate settings")
+		}
+		return nil
+	}
+
+	if tlsCfg.CertFile == "" {
+		return errors.New("server.tls.cert_file is required when server.tls.enabled is true: set the PEM certificate path in config.yaml or via PROXY_TLS_CERT_FILE")
+	}
+	if tlsCfg.KeyFile == "" {
+		return errors.New("server.tls.key_file is required when server.tls.enabled is true: set the PEM private key path in config.yaml or via PROXY_TLS_KEY_FILE")
+	}
+	if tlsCfg.ClientCAFile != "" && c.Auth.Enabled {
+		return errors.New("server.tls.client_ca_file and auth.enabled are mutually exclusive: mTLS authenticates clients with certificates, so disable auth.enabled (PROXY_AUTH_ENABLED=false) or remove server.tls.client_ca_file")
+	}
+	if _, err := tls.LoadX509KeyPair(tlsCfg.CertFile, tlsCfg.KeyFile); err != nil {
+		return fmt.Errorf("server.tls: loading certificate pair (cert_file %q, key_file %q): %w", tlsCfg.CertFile, tlsCfg.KeyFile, err)
+	}
+
+	if tlsCfg.ClientCAFile == "" {
+		return nil
+	}
+
+	caPEM, err := os.ReadFile(tlsCfg.ClientCAFile)
+	if err != nil {
+		return fmt.Errorf("server.tls.client_ca_file %q: %w", tlsCfg.ClientCAFile, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return fmt.Errorf("server.tls.client_ca_file %q contains no valid PEM certificates", tlsCfg.ClientCAFile)
 	}
 
 	return nil
