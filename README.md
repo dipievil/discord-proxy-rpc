@@ -254,6 +254,11 @@ server:
   rate_limit_per_ip: 60                  # Max requests per IP within the window (dashboard, REST, WS)
   rate_limit_window: 1m                  # Rate-limit window
   trusted_proxies: []                    # CIDRs whose X-Forwarded-For is honoured (empty = RemoteAddr only)
+  tls:
+    enabled: false                       # Serve HTTPS/WSS instead of HTTP/WS
+    cert_file: ""                        # PEM server certificate (chain)
+    key_file: ""                         # PEM private key for cert_file
+    client_ca_file: ""                   # PEM CA bundle; set = require and verify client certs (mTLS)
 
 auth:
   enabled: false                         # Enable Bearer token auth
@@ -294,6 +299,10 @@ Every config key can be set via an environment variable with the `PROXY_` prefix
 | `server.rate_limit_per_ip` | `PROXY_SERVER_RATE_LIMIT_PER_IP` | `60` |
 | `server.rate_limit_window` | `PROXY_SERVER_RATE_LIMIT_WINDOW` | `1m` |
 | `server.trusted_proxies` | `PROXY_SERVER_TRUSTED_PROXIES` | `""` (comma-separated CIDRs; empty = use the TCP peer) |
+| `server.tls.enabled` | `PROXY_SERVER_TLS_ENABLED` | `false` |
+| `server.tls.cert_file` | `PROXY_SERVER_TLS_CERT_FILE` | `""` |
+| `server.tls.key_file` | `PROXY_SERVER_TLS_KEY_FILE` | `""` |
+| `server.tls.client_ca_file` | `PROXY_SERVER_TLS_CLIENT_CA_FILE` | `""` |
 | `auth.enabled` | `PROXY_AUTH_ENABLED` | `false` |
 | `auth.token` | `PROXY_AUTH_TOKEN` | `""` |
 | `mdns.enabled` | `PROXY_MDNS_ENABLED` | `true` |
@@ -304,6 +313,54 @@ Every config key can be set via an environment variable with the `PROXY_` prefix
 | `metrics.enabled` | `PROXY_METRICS_ENABLED` | `false` |
 
 > **Breaking change**: the legacy `PROXY_TOKEN` env var was removed. `PROXY_AUTH_TOKEN` is now the sole env source for `auth.token` — update any scripts or containers still setting `PROXY_TOKEN`.
+
+### TLS and mTLS
+
+The proxy terminates TLS itself. One listener serves the dashboard, the REST API, `/ws`, `/metrics` and the health probes; enabling TLS switches all of them to HTTPS/WSS at once. TLS 1.2 is the minimum version.
+
+```yaml
+server:
+  tls:
+    enabled: true
+    cert_file: /etc/discord-proxy-rpc/tls/server.crt   # PEM chain, leaf first
+    key_file: /etc/discord-proxy-rpc/tls/server.key    # PEM private key
+    client_ca_file: ""                                 # optional: enables mTLS
+```
+
+The same settings can come from the environment:
+
+```bash
+PROXY_SERVER_TLS_ENABLED=true
+PROXY_SERVER_TLS_CERT_FILE=/etc/discord-proxy-rpc/tls/server.crt
+PROXY_SERVER_TLS_KEY_FILE=/etc/discord-proxy-rpc/tls/server.key
+PROXY_SERVER_TLS_CLIENT_CA_FILE=/etc/discord-proxy-rpc/tls/clients-ca.crt
+```
+
+**Server-side TLS only** (`client_ca_file` empty): clients verify the server certificate; nothing else changes. Bearer-token auth (`auth.enabled`) still works and is optional.
+
+**Mutual TLS** (`client_ca_file` set): the listener uses `RequireAndVerifyClientCert`, so every connection — including `/health` and `/metrics` — must present a client certificate that chains to that CA. Clients without a certificate, or with one from another CA, are rejected during the TLS handshake, before any HTTP route runs. The WebSocket handler additionally checks `r.TLS.VerifiedChains` as defence in depth: a certificate that was merely presented by a listener configured `RequestClientCert` is not enough.
+
+Mutual TLS and bearer-token auth are **mutually exclusive**: a client certificate is the only supported identity when `client_ca_file` is set. Configuring both fails at startup with an error naming the conflicting keys, never with an ambiguous half-enabled state.
+
+Validation is fail-fast at load time, not at first request:
+
+- `server.tls.enabled: true` requires both `cert_file` and `key_file`.
+- A certificate/key/CA path set while `server.tls.enabled` is `false` is rejected instead of silently serving plaintext.
+- An unreadable file, a cert/key mismatch or a PEM file without certificates aborts startup with the offending path in the error.
+
+Examples with mTLS enabled:
+
+```bash
+curl --cacert ca.crt --cert client.crt --key client.key https://proxy.local:8765/health
+# WebSocket clients (wscat, Node, Go) pass the same pair as their TLS client certificate
+wscat -c wss://proxy.local:8765/ws --ca ca.crt --cert client.crt --key client.key
+```
+
+The client certificate must carry the `clientAuth` extended key usage; a certificate issued only for `serverAuth` is rejected.
+
+**Bundled clients:** the dashboard picks `wss://` from the page scheme automatically. The TUI (`-addr`) and the example consumer accept a `wss://` URL, but they verify with the system trust store and have no option to present a client certificate, so they work with server-side TLS only — use `curl`/`wscat` or an external client for mTLS.
+
+**mDNS:** DNS-SD has no scheme field, so when TLS is on the advertised TXT record gains `tls=server` or `tls=mtls` (alongside `v=1`). Discovery clients must treat those instances as `https`/`wss`; without the key the endpoint is plain `http`/`ws`. The announce still carries only the API version and mode — no tokens, hostnames or certificate material.
 
 ---
 
@@ -327,7 +384,9 @@ The dashboard is an embedded web SPA served at the root path (`/`). It provides:
 | LAN | `http://<host-ip>:8765` |
 | mDNS | `http://<instance-name>.local:8765` |
 
-mDNS auto-discovery works out of the box on most networks. On Linux, ensure Avahi is running. On macOS, it is built-in. On Windows, install Bonjour Print Services or use mDNS manually.
+When `server.tls.enabled` is on, every URL above uses `https://`, and the WebSocket uses `wss://`. The browser must trust the server certificate; with mTLS enabled it must also present a client certificate, so import the client pair into the browser or use a reverse proxy in front of the proxy.
+
+mDNS auto-discovery works out of the box on most networks. On Linux, ensure Avahi is running. On macOS, it is built-in. On Windows, install Bonjour Print Services or use mDNS manually. With TLS enabled the advertised TXT record carries `tls=server` or `tls=mtls`; honour it and connect with `https`/`wss`.
 
 When `auth.enabled` is true, the dashboard cannot send an `Authorization` header. Open the dashboard once with the token in the URL — `http://<host>:8765/?token=<your-token>` — and it stores the token in `sessionStorage`, strips it from the address bar, and authenticates the WebSocket with it on every (re)connect. The same request sets a short-lived (15 min) `HttpOnly` cookie so the page's static assets, and a reload within that window, load without the token in the URL. The token is scoped to that tab and discarded when it closes; other API clients still send their own `Authorization` header or `?token=`.
 
@@ -391,6 +450,8 @@ PROXY_HOST=192.168.0.103 PROXY_PORT=8765 PROXY_AUTH_TOKEN=<your-token> bin/disco
 
 **Behind a reverse proxy or ingress:** the limiter keys on the TCP peer by default. With a proxy in front, every client would share the proxy's budget, so list the proxy's addresses in `server.trusted_proxies` (CIDR blocks, e.g. `["10.0.0.0/8"]`); the last `X-Forwarded-For` hop that is not itself trusted then becomes the client. An empty list ignores forwarding headers entirely, so a client cannot forge its identity by sending one.
 
+With `server.tls.client_ca_file` set (mTLS), every route, health probes included, requires a client certificate; unauthenticated access is impossible because the TLS handshake fails first. With server-side TLS only, the bearer-token rules above apply unchanged, over HTTPS. Bearer auth and mTLS cannot be combined.
+
 #### Kubernetes Probes
 
 For Kubernetes deployments, use `/healthz` for liveness and `/readyz` for readiness:
@@ -398,6 +459,7 @@ For Kubernetes deployments, use `/healthz` for liveness and `/readyz` for readin
 ```yaml
 livenessProbe:
   httpGet:
+    scheme: HTTPS       # use HTTP only when TLS is disabled; add client cert material for mTLS
     path: /healthz
     port: 8765
   initialDelaySeconds: 10
@@ -407,6 +469,7 @@ livenessProbe:
 
 readinessProbe:
   httpGet:
+    scheme: HTTPS
     path: /readyz
     port: 8765
   initialDelaySeconds: 5
@@ -418,9 +481,11 @@ readinessProbe:
 - **Liveness** (`/healthz`): Process is alive. Restarts container if probe fails.
 - **Readiness** (`/readyz`): Discord IPC is connected. Removes pod from Service endpoints if probe fails (traffic stops routing until Discord reconnects).
 
+The probes stay unauthenticated by design, but they are not exempt from transport security: with TLS enabled they are HTTPS-only, and with mTLS the kubelet must be able to present a client certificate, which most probe configurations cannot do — in that mode probe from inside the pod over a trusted connection or terminate mTLS in front of the proxy.
+
 ### WebSocket Protocol
 
-Connect to `ws://<host>:8765/ws` (or your configured `ws_path`).
+Connect to `ws://<host>:8765/ws` (or your configured `ws_path`), or `wss://` when TLS is enabled.
 
 **Authentication (if enabled):**
 
@@ -434,6 +499,8 @@ Browser clients (such as the dashboard), which cannot set request headers, send 
 Sec-WebSocket-Protocol: proxy-token-<base64url(token)>
 ```
 The dashboard produces this automatically when given `?token=<your-token>` in the page URL. For plain HTTP requests (REST and the dashboard itself) the token may also be supplied as `?token=<token>`; a successful query-token request sets a short-lived auth cookie so the page's static assets load without it.
+
+With mTLS (`server.tls.client_ca_file` set) there is no token: the upgrade must arrive over a TLS connection whose client certificate chains to the configured CA. A missing or untrusted certificate fails the TLS handshake; if a handler is reached without one anyway, it answers HTTP 401 `AUTH_001`.
 
 **Client -> Server messages:**
 
@@ -630,6 +697,14 @@ This is expected today. Discord's local IPC socket does not expose another appli
 - The WebSocket upgrade takes it as `Authorization: Bearer <token>` or the `proxy-token-<base64url(token)>` subprotocol.
 - Check for trailing whitespace or newline characters in the token.
 
+### 7. TLS or mTLS connection fails
+
+- `tls: failed to verify certificate` on the client: the client does not trust the issuer of `server.tls.cert_file`. Point the client at the CA (`curl --cacert`, browser trust store) or use a certificate the client already trusts.
+- `remote error: tls: certificate required` or `bad certificate`: mTLS is on and the client sent no certificate, or one not signed by `server.tls.client_ca_file`. Check the chain and that the client certificate has the `clientAuth` extended key usage.
+- Startup fails with a `server.tls` error: the configured cert/key/CA path is wrong, the PEM is invalid, or cert and key do not match. The error names the file.
+- `mutually exclusive` at startup: `auth.enabled` is still true. Disable bearer auth when using mTLS.
+- With mTLS, plain health probes and plain `curl` fail by design; use `--cert`/`--key` or probe from inside the trusted network.
+
 ---
 
 ## Security Considerations
@@ -638,8 +713,10 @@ This is expected today. Discord's local IPC socket does not expose another appli
 - **LAN only** -- Binds to `0.0.0.0` by default. Restrict via firewall rules or bind to `127.0.0.1` and use a VPN (e.g., Tailscale) for remote access.
 - **Optional token auth** -- Enable `auth.enabled: true` and set a strong token via `PROXY_AUTH_TOKEN` (or `auth.token` in the config file). It protects the WebSocket upgrade, the REST endpoints (`/api/*`) and the dashboard; the health probes stay open for orchestrators. Without auth, any device on the LAN can read the presence data.
 - **No persistence** -- No database, no log files, no presence data stored on disk. Everything is in-memory and lost on restart.
-- **mDNS is informational only** -- The mDNS TXT record contains only the API version (`v=1`). No sensitive data is broadcast.
-- **WebSocket traffic is plaintext** -- For encrypted transport, place the proxy behind a TLS-terminating reverse proxy (e.g., nginx, Caddy).
+- **mDNS is informational only** -- The mDNS TXT record contains only the API version (`v=1`) and, with TLS enabled, the mode (`tls=server` or `tls=mtls`). No sensitive data is broadcast.
+- **Transport encryption (opt-in)** -- `server.tls.enabled: true` serves the whole surface over HTTPS/WSS with TLS 1.2 as the minimum. Without it, WebSocket traffic is plaintext; alternatively terminate TLS in a reverse proxy (nginx, Caddy).
+- **Mutual TLS (opt-in)** -- `server.tls.client_ca_file` requires a client certificate chained to that CA on every connection, including health probes and `/metrics`. This authenticates the client and encrypts the transport, and it replaces bearer-token auth (the two cannot be combined). It is authentication, not authorisation: any certificate issued by the CA can read the presence data, so keep the client CA separate and narrow.
+- **Certificate material** -- Files are read once at startup; an unreadable or mismatched pair aborts startup. Private keys are never logged. Reloading a renewed certificate requires a restart.
 
 ---
 

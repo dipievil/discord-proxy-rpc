@@ -13,6 +13,11 @@ SKIP_UNIT="${E2E_SKIP_UNIT:-0}"
 # immediately. Any CI step that occupies the E2E_PORT must hold it for longer
 # than this deadline.
 STARTUP_TIMEOUT="${E2E_STARTUP_TIMEOUT:-10}"
+# CURL_TLS_ARGS carries the CA (and, for mTLS, the client pair) into every curl
+# call of the TLS phase, including the readiness probe. It is intentionally
+# expanded unquoted: it holds zero or more flags, never a single filename.
+CURL_TLS_ARGS=""
+TLS_DIR="/tmp/discord-proxy-e2e-tls"
 PID=""
 PASS=0
 FAIL=0
@@ -23,6 +28,7 @@ cleanup() {
         wait "$PID" 2>/dev/null || true
     fi
     rm -f "$BINARY" "$BINARY_LOG" "$COOKIE_JAR"
+    rm -rf "$TLS_DIR"
 }
 trap cleanup EXIT
 
@@ -62,7 +68,7 @@ wait_for_ready() {
             summary
             exit 1
         fi
-        if curl -sf --max-time 1 "$BASE/health" >/dev/null 2>&1; then
+        if curl -sf --max-time 1 ${CURL_TLS_ARGS} "$BASE/health" >/dev/null 2>&1; then
             READY=1
             return 0
         fi
@@ -353,6 +359,140 @@ kill "$PID" 2>/dev/null || true
 wait "$PID" 2>/dev/null || true
 PID=""
 echo ""
+
+
+# --- Phase 4d: Binary E2E (TLS and mTLS) ---
+# cmd/proxy/main.go builds the listener, picks WithRequireClientCert from the
+# config and passes the transport mode to the mDNS advertiser; a unit test never
+# reaches that wiring. Certificate material is issued with openssl here, and the
+# phase is skipped when openssl is missing so the local workflow still works.
+echo "--- Phase 4d: Binary E2E (TLS and mTLS) ---"
+
+if ! command -v openssl >/dev/null 2>&1; then
+    echo "  SKIP: openssl is not available to issue the test certificates"
+    echo ""
+else
+    rm -rf "$TLS_DIR"
+    mkdir -p "$TLS_DIR"
+
+    # make_cert <name> <ca-prefix> <extended-key-usage> [san]
+    make_cert() {
+        local name="$1" ca="$2" usage="$3" san="${4:-}"
+        openssl req -new -newkey rsa:2048 -nodes -keyout "$TLS_DIR/$name.key" \
+            -out "$TLS_DIR/$name.csr" -subj "/CN=$name" >/dev/null 2>&1
+        {
+            echo "extendedKeyUsage=$usage"
+            if [[ -n "$san" ]]; then echo "subjectAltName=$san"; fi
+        } > "$TLS_DIR/$name.ext"
+        openssl x509 -req -in "$TLS_DIR/$name.csr" -CA "$ca.crt" -CAkey "$ca.key" \
+            -CAcreateserial -out "$TLS_DIR/$name.crt" -days 1 \
+            -extfile "$TLS_DIR/$name.ext" >/dev/null 2>&1
+    }
+
+    if openssl req -x509 -newkey rsa:2048 -nodes -keyout "$TLS_DIR/ca.key" \
+            -out "$TLS_DIR/ca.crt" -days 1 -subj "/CN=e2e-ca" >/dev/null 2>&1 &&
+        make_cert server "$TLS_DIR/ca" serverAuth "IP:127.0.0.1,DNS:localhost" &&
+        make_cert client "$TLS_DIR/ca" clientAuth; then
+        pass "Issued the TLS test material"
+
+        # --- server-side TLS ---
+        rm -f "$BINARY_LOG"
+        PROXY_DISCORD_CLIENT_ID="000000000000000000" \
+        PROXY_DISCORD_AUTO_RECONNECT="false" \
+        PROXY_SERVER_HOST="127.0.0.1" \
+        PROXY_SERVER_PORT="$PORT" \
+        PROXY_SERVER_WS_PATH="/ws" \
+        PROXY_SERVER_RATE_LIMIT_PER_IP="1000" \
+        PROXY_SERVER_TLS_ENABLED="true" \
+        PROXY_SERVER_TLS_CERT_FILE="$TLS_DIR/server.crt" \
+        PROXY_SERVER_TLS_KEY_FILE="$TLS_DIR/server.key" \
+        PROXY_AUTH_ENABLED="false" \
+        PROXY_MDNS_ENABLED="false" \
+        PROXY_LOGGING_LEVEL="info" \
+        PROXY_LOGGING_FORMAT="console" \
+            "$BINARY" >"$BINARY_LOG" 2>&1 &
+        PID=$!
+
+        BASE="https://127.0.0.1:${PORT}"
+        CURL_TLS_ARGS="--cacert ${TLS_DIR}/ca.crt"
+
+        if wait_for_ready "TLS server"; then
+            pass "TLS server answers /health over https with the CA"
+
+            CODE=$(http_code "http://127.0.0.1:${PORT}/health")
+            if [[ "$CODE" != "200" ]]; then
+                pass "TLS listener does not serve plaintext (http answer ${CODE})"
+            else
+                fail "TLS listener answered a plaintext /health with 200"
+            fi
+
+            if grep -Eq '"tls": *"server"' "$BINARY_LOG"; then
+                pass "startup logs the TLS transport mode (tls=server)"
+            else
+                fail "startup log does not report tls=server"
+            fi
+        else
+            dump_binary_log
+            fail "TLS server did not become ready on port ${PORT} within ${STARTUP_TIMEOUT}s"
+        fi
+
+        kill "$PID" 2>/dev/null || true
+        wait "$PID" 2>/dev/null || true
+        PID=""
+        rm -f "$BINARY_LOG"
+
+        # --- mutual TLS ---
+        PROXY_DISCORD_CLIENT_ID="000000000000000000" \
+        PROXY_DISCORD_AUTO_RECONNECT="false" \
+        PROXY_SERVER_HOST="127.0.0.1" \
+        PROXY_SERVER_PORT="$PORT" \
+        PROXY_SERVER_WS_PATH="/ws" \
+        PROXY_SERVER_RATE_LIMIT_PER_IP="1000" \
+        PROXY_SERVER_TLS_ENABLED="true" \
+        PROXY_SERVER_TLS_CERT_FILE="$TLS_DIR/server.crt" \
+        PROXY_SERVER_TLS_KEY_FILE="$TLS_DIR/server.key" \
+        PROXY_SERVER_TLS_CLIENT_CA_FILE="$TLS_DIR/ca.crt" \
+        PROXY_AUTH_ENABLED="false" \
+        PROXY_MDNS_ENABLED="false" \
+        PROXY_LOGGING_LEVEL="info" \
+        PROXY_LOGGING_FORMAT="console" \
+            "$BINARY" >"$BINARY_LOG" 2>&1 &
+        PID=$!
+
+        CURL_TLS_ARGS="--cacert ${TLS_DIR}/ca.crt --cert ${TLS_DIR}/client.crt --key ${TLS_DIR}/client.key"
+
+        if wait_for_ready "mTLS server"; then
+            pass "mTLS server answers /health with a client certificate"
+
+            if curl -sf --max-time 5 --cacert "$TLS_DIR/ca.crt" \
+                    "$BASE/health" >/dev/null 2>&1; then
+                fail "mTLS listener served /health without a client certificate"
+            else
+                pass "mTLS listener rejects a client without a certificate"
+            fi
+
+            if grep -Eq '"tls": *"mtls"' "$BINARY_LOG"; then
+                pass "startup logs the mTLS transport mode (tls=mtls)"
+            else
+                fail "startup log does not report tls=mtls"
+            fi
+        else
+            dump_binary_log
+            fail "mTLS server did not become ready on port ${PORT} within ${STARTUP_TIMEOUT}s"
+        fi
+
+        kill "$PID" 2>/dev/null || true
+        wait "$PID" 2>/dev/null || true
+        PID=""
+    else
+        fail "Could not issue the TLS test material with openssl"
+    fi
+
+    BASE="http://127.0.0.1:${PORT}"
+    CURL_TLS_ARGS=""
+    rm -rf "$TLS_DIR"
+    echo ""
+fi
 
 # --- Phase 5: Full race-condition test ---
 if [[ "$SKIP_UNIT" == "1" ]]; then

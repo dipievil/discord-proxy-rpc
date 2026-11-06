@@ -138,6 +138,21 @@ When `metrics.enabled: true`, the server registers `/metrics` (Prometheus text f
 
 **Client identity:** the limiter keys on the TCP peer (`RemoteAddr`) by default. `server.trusted_proxies` lists CIDR blocks whose `X-Forwarded-For` is honoured; when the peer is trusted the limiter takes the last hop that is not itself trusted, so clients behind an ingress keep separate budgets and an untrusted client cannot forge its IP. An empty list ignores forwarding headers entirely.
 
+#### TLS / mTLS (v1.2, task 11.1)
+
+One listener serves every route above — dashboard, REST, `/ws`, `/metrics` and the health probes — so enabling TLS changes the scheme for all of them at once (`https`/`wss`).
+
+| `server.tls` | Behaviour |
+|--------------|-----------|
+| `enabled: false` (default) | Plain HTTP/WS, unchanged from v1.1 |
+| `enabled: true`, `client_ca_file` empty | Server-side TLS (`MinVersion` TLS 1.2). Clients verify the server; bearer auth remains optional |
+| `enabled: true`, `client_ca_file` set | Mutual TLS: `ClientAuth: RequireAndVerifyClientCert` with that PEM as `ClientCAs`, so every connection including health probes and `/metrics` needs a certificate chained to it. The WS handler also rejects upgrades whose `r.TLS.VerifiedChains` is empty (defence in depth, so a listener that only requested a certificate cannot let an unverified one through) with HTTP 401 `AUTH_001`. Bearer auth is rejected as a conflicting config |
+
+- Env surface: `PROXY_SERVER_TLS_ENABLED`, `PROXY_SERVER_TLS_CERT_FILE`, `PROXY_SERVER_TLS_KEY_FILE`, `PROXY_SERVER_TLS_CLIENT_CA_FILE`.
+- `/health`, `/healthz` and `/readyz` stay unauthenticated but are **TLS-only** when TLS is enabled; probes must switch to HTTPS, and with mTLS the prober needs a client certificate (kubelet probes normally cannot supply one, so probe in-pod or terminate mTLS upstream).
+- Validation order and failure modes: `enabled` requires `cert_file` and `key_file`; certificate settings with `enabled: false` are rejected rather than silently serving plaintext; `client_ca_file` + `auth.enabled` fails fast as mutually exclusive; the cert/key pair, CA readability and CA PEM validity are checked at config load (`server.tls` errors name the offending file), and the listener is built from the same material once at startup, so a bad PEM never reaches the accept loop.
+- Client certificates must carry the `clientAuth` extended key usage; `serverAuth`-only leafs are rejected by the handshake.
+
 #### WebSocket Protocol
 
 **Authentication handshake**
@@ -235,13 +250,15 @@ HTTP-level errors on the API and WS surface (auth failure, oversized body, rate 
 - The legacy `PROXY_TOKEN` env var was removed in task 9.6; it no longer sets `auth.token` — use `PROXY_AUTH_TOKEN` only
 - Token comparison is constant-time (`crypto/subtle`)
 - Token sources, in precedence order: `Authorization: Bearer <token>` header, WebSocket subprotocol, auth cookie, `?token=` query parameter
+- Mutually exclusive with mTLS: when `server.tls.client_ca_file` is set, `auth.enabled` must be false (config validation fails fast). The client certificate is then the only client identity.
 - Browser clients (the dashboard) cannot set request headers; they send the token as a WebSocket subprotocol `proxy-token-<base64url(token)>` instead. For HTTP navigation they may also open the dashboard once as `/?token=<token>`: a successful query-token request sets a short-lived (`15m`), `HttpOnly`, `SameSite=Strict` cookie whose value is the base64url-encoded token, so the static assets and later reloads authenticate without the token in the URL. The cookie is `Secure` only when the request itself arrived over TLS
 
 ### 4. mDNS Announcer (`internal/mdns/`)
 
 - **Library**: `github.com/grandcat/zeroconf`
 - Registers service: `_discord-proxy._tcp.local` on configured port
-- TXT record: `v=1` (API version)
+- TXT record: `v=1` (API version) and, when TLS is enabled, `tls=server` or `tls=mtls` (transport authentication mode)
+- DNS-SD has no scheme field, so the `tls` TXT key is the scheme signal: its presence means the advertised port is `https`/`wss`, its absence means plain `http`/`ws`
 - Instance name: configurable (default: hostname)
 - Cleanup on graceful shutdown
 
@@ -255,6 +272,7 @@ go run ./cmd/discover -timeout 5s -json  # {"count":N,"proxies":[...]}
 ```
 
 - Columns: instance, host, addresses, port, TXT. Addresses are the dialable ones; link-local IPv6 addresses are counted as `(+N link-local)` in the table and kept in the `link_local` JSON field, because they need a zone to be usable.
+- The TXT column carries `tls=server|mtls` when the announced proxy uses TLS; treat those endpoints as `https`/`wss` (mTLS additionally needs a client certificate).
 - Results are deduplicated on instance/host/port, merging addresses and TXT records, and sorted by instance name for stable output.
 - Table cells are sanitized (control characters replaced) so an unauthenticated mDNS announcement cannot inject ANSI escapes or extra columns; JSON output keeps the raw values.
 - `-timeout` must be positive (a browse without a deadline would never end).
@@ -286,6 +304,11 @@ server:
   rate_limit_per_ip: 60      # max requests per IP within the window (dashboard, REST, WS)
   rate_limit_window: 1m      # rate-limit window
   trusted_proxies: []        # CIDRs whose X-Forwarded-For is honoured (empty = RemoteAddr only)
+  tls:
+    enabled: false           # serve HTTPS/WSS
+    cert_file: ""            # PEM server certificate (chain)
+    key_file: ""             # PEM private key
+    client_ca_file: ""       # PEM CA bundle; set = require and verify client certs (mTLS)
 
 auth:
   enabled: false
@@ -347,6 +370,7 @@ discord-proxy-rpc/
 │   │   ├── ws.go
 │   │   ├── hub.go
 │   │   ├── auth.go
+│   │   ├── tls.go            # TLS/mTLS listener config and serve path
 │   │   ├── errors.go
 │   │   ├── messages.go
 │   │   └── ratelimit.go
@@ -400,6 +424,8 @@ require (
     go.uber.org/zap v1.28.0
 )
 ```
+
+TLS/mTLS (task 11.1) uses only the standard library (`crypto/tls`, `crypto/x509`, `net`) — no new dependency.
 
 ---
 
@@ -489,7 +515,21 @@ ENTRYPOINT ["discord-proxy"]
 - **Panic recovery**: `RecoveryMiddleware` wraps the HTTP mux (plus an inner recover in the WS handler); a panicking handler returns HTTP 500 `INT_001` instead of crashing the process
 - **Cross-origin protection**: The WS upgrader rejects cross-origin requests (gorilla/websocket default `CheckOrigin`); no wildcard CORS headers are emitted
 - **No persistence**: No database, no logs of presence data beyond memory
-- **mDNS**: Only announces service existence; no sensitive data in TXT records
+- **mDNS**: Only announces service existence; no sensitive data in TXT records beyond the API version and, with TLS enabled, the transport mode
+- **TLS (opt-in)**: `server.tls.enabled` serves every route over HTTPS/WSS with TLS 1.2 as the minimum. Without it the surface is plaintext; terminating TLS in a reverse proxy is the alternative
+- **mTLS (opt-in)**: `server.tls.client_ca_file` requires and verifies a client certificate on every connection, health probes and `/metrics` included, and replaces bearer-token auth (the two are mutually exclusive and rejected at startup)
+- **Certificate material**: loaded and parsed once at startup; unreadable files, invalid PEM, a cert/key mismatch or a CA bundle without certificates abort startup with the file named. Private keys are never logged; renewal needs a restart
+
+### Transport threat model (task 11.1)
+
+| Threat | Mitigation |
+|--------|------------|
+| Passive LAN sniffing of presence data or bearer tokens | `server.tls.enabled` encrypts every route over HTTPS/WSS |
+| Unauthorised LAN client reading presence or opening the WS | `server.tls.client_ca_file` requires a certificate chained to the configured CA; a missing or untrusted certificate fails the TLS handshake |
+| A config mistake silently serving plaintext or skipping client verification | Fail-fast validation (cert settings without `enabled`, missing cert/key, unreadable or invalid PEM, mTLS + bearer auth) plus the WS handler's `r.TLS.VerifiedChains` check |
+| A probe route bypassing transport auth | Health probes stay unauthenticated but are TLS-only and, under mTLS, require a client certificate too |
+
+Out of scope: the local Discord IPC socket never leaves the host; private-key protection depends on filesystem permissions; there is no CRL/OCSP check (revocation means editing the client CA bundle and restarting); mTLS authenticates but does not authorise per client — any certificate from the CA can read all presence data, so issue client certificates narrowly. The dashboard follows the page scheme (`wss://`), but the TUI and the example consumer only verify with the system trust store and cannot present a client certificate, so mTLS clients are external tools (`curl`, `wscat`, Node, Go).
 
 ---
 
@@ -497,8 +537,8 @@ ENTRYPOINT ["discord-proxy"]
 
 | Level | Scope |
 |-------|-------|
-| Unit | Parser, diff logic, config loading, message codecs |
-| Integration | IPC client mock (fake socket), WS hub broadcast, mDNS registration |
+| Unit | Parser, diff logic, config loading (including TLS validation), message codecs |
+| Integration | IPC client mock (fake socket), WS hub broadcast, mDNS registration, TLS/mTLS listener and WS client-certificate path with in-test self-signed certificates |
 | E2E | Full stack: Discord IPC → proxy → WS client → dashboard render |
 
 ---
