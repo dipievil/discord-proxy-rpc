@@ -1,8 +1,6 @@
 package config
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
@@ -170,10 +168,10 @@ func setupEnv(v *viper.Viper) {
 	_ = v.BindEnv("server.rate_limit_window", "PROXY_SERVER_RATE_LIMIT_WINDOW")
 	_ = v.BindEnv("server.trusted_proxies", "PROXY_SERVER_TRUSTED_PROXIES")
 
-	_ = v.BindEnv("server.tls.enabled", "PROXY_TLS_ENABLED")
-	_ = v.BindEnv("server.tls.cert_file", "PROXY_TLS_CERT_FILE")
-	_ = v.BindEnv("server.tls.key_file", "PROXY_TLS_KEY_FILE")
-	_ = v.BindEnv("server.tls.client_ca_file", "PROXY_TLS_CLIENT_CA_FILE")
+	_ = v.BindEnv("server.tls.enabled", "PROXY_SERVER_TLS_ENABLED")
+	_ = v.BindEnv("server.tls.cert_file", "PROXY_SERVER_TLS_CERT_FILE")
+	_ = v.BindEnv("server.tls.key_file", "PROXY_SERVER_TLS_KEY_FILE")
+	_ = v.BindEnv("server.tls.client_ca_file", "PROXY_SERVER_TLS_CLIENT_CA_FILE")
 
 	_ = v.BindEnv("auth.enabled", "PROXY_AUTH_ENABLED")
 	_ = v.BindEnv("auth.token", "PROXY_AUTH_TOKEN")
@@ -264,38 +262,23 @@ func (c *Config) validateTLS() error {
 
 	if !tlsCfg.Enabled {
 		if tlsCfg.CertFile != "" || tlsCfg.KeyFile != "" || tlsCfg.ClientCAFile != "" {
-			return errors.New("server.tls.cert_file, server.tls.key_file or server.tls.client_ca_file is set while server.tls.enabled is false: set server.tls.enabled: true (PROXY_TLS_ENABLED) or remove the certificate settings")
+			return errors.New("server.tls.cert_file, server.tls.key_file or server.tls.client_ca_file is set while server.tls.enabled is false: set server.tls.enabled: true (PROXY_SERVER_TLS_ENABLED) or remove the certificate settings")
 		}
 		return nil
 	}
 
 	if tlsCfg.CertFile == "" {
-		return errors.New("server.tls.cert_file is required when server.tls.enabled is true: set the PEM certificate path in config.yaml or via PROXY_TLS_CERT_FILE")
+		return errors.New("server.tls.cert_file is required when server.tls.enabled is true: set the PEM certificate path in config.yaml or via PROXY_SERVER_TLS_CERT_FILE")
 	}
 	if tlsCfg.KeyFile == "" {
-		return errors.New("server.tls.key_file is required when server.tls.enabled is true: set the PEM private key path in config.yaml or via PROXY_TLS_KEY_FILE")
+		return errors.New("server.tls.key_file is required when server.tls.enabled is true: set the PEM private key path in config.yaml or via PROXY_SERVER_TLS_KEY_FILE")
 	}
 	if tlsCfg.ClientCAFile != "" && c.Auth.Enabled {
 		return errors.New("server.tls.client_ca_file and auth.enabled are mutually exclusive: mTLS authenticates clients with certificates, so disable auth.enabled (PROXY_AUTH_ENABLED=false) or remove server.tls.client_ca_file")
 	}
-	if _, err := tls.LoadX509KeyPair(tlsCfg.CertFile, tlsCfg.KeyFile); err != nil {
-		return fmt.Errorf("server.tls: loading certificate pair (cert_file %q, key_file %q): %w", tlsCfg.CertFile, tlsCfg.KeyFile, err)
-	}
 
-	if tlsCfg.ClientCAFile == "" {
-		return nil
-	}
-
-	caPEM, err := os.ReadFile(tlsCfg.ClientCAFile)
-	if err != nil {
-		return fmt.Errorf("server.tls.client_ca_file %q: %w", tlsCfg.ClientCAFile, err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return fmt.Errorf("server.tls.client_ca_file %q contains no valid PEM certificates", tlsCfg.ClientCAFile)
-	}
-
-	return nil
+	_, err := tlsCfg.Load()
+	return err
 }
 
 func SetupLogger(level, format string) (*zap.Logger, error) {

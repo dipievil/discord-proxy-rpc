@@ -299,10 +299,10 @@ Every config key can be set via an environment variable with the `PROXY_` prefix
 | `server.rate_limit_per_ip` | `PROXY_SERVER_RATE_LIMIT_PER_IP` | `60` |
 | `server.rate_limit_window` | `PROXY_SERVER_RATE_LIMIT_WINDOW` | `1m` |
 | `server.trusted_proxies` | `PROXY_SERVER_TRUSTED_PROXIES` | `""` (comma-separated CIDRs; empty = use the TCP peer) |
-| `server.tls.enabled` | `PROXY_TLS_ENABLED` | `false` |
-| `server.tls.cert_file` | `PROXY_TLS_CERT_FILE` | `""` |
-| `server.tls.key_file` | `PROXY_TLS_KEY_FILE` | `""` |
-| `server.tls.client_ca_file` | `PROXY_TLS_CLIENT_CA_FILE` | `""` |
+| `server.tls.enabled` | `PROXY_SERVER_TLS_ENABLED` | `false` |
+| `server.tls.cert_file` | `PROXY_SERVER_TLS_CERT_FILE` | `""` |
+| `server.tls.key_file` | `PROXY_SERVER_TLS_KEY_FILE` | `""` |
+| `server.tls.client_ca_file` | `PROXY_SERVER_TLS_CLIENT_CA_FILE` | `""` |
 | `auth.enabled` | `PROXY_AUTH_ENABLED` | `false` |
 | `auth.token` | `PROXY_AUTH_TOKEN` | `""` |
 | `mdns.enabled` | `PROXY_MDNS_ENABLED` | `true` |
@@ -330,15 +330,15 @@ server:
 The same settings can come from the environment:
 
 ```bash
-PROXY_TLS_ENABLED=true
-PROXY_TLS_CERT_FILE=/etc/discord-proxy-rpc/tls/server.crt
-PROXY_TLS_KEY_FILE=/etc/discord-proxy-rpc/tls/server.key
-PROXY_TLS_CLIENT_CA_FILE=/etc/discord-proxy-rpc/tls/clients-ca.crt
+PROXY_SERVER_TLS_ENABLED=true
+PROXY_SERVER_TLS_CERT_FILE=/etc/discord-proxy-rpc/tls/server.crt
+PROXY_SERVER_TLS_KEY_FILE=/etc/discord-proxy-rpc/tls/server.key
+PROXY_SERVER_TLS_CLIENT_CA_FILE=/etc/discord-proxy-rpc/tls/clients-ca.crt
 ```
 
 **Server-side TLS only** (`client_ca_file` empty): clients verify the server certificate; nothing else changes. Bearer-token auth (`auth.enabled`) still works and is optional.
 
-**Mutual TLS** (`client_ca_file` set): the listener uses `RequireAndVerifyClientCert`, so every connection — including `/health` and `/metrics` — must present a client certificate that chains to that CA. Clients without a certificate, or with one from another CA, are rejected during the TLS handshake, before any HTTP route runs. The WebSocket handler additionally checks `r.TLS.PeerCertificates` as defence in depth.
+**Mutual TLS** (`client_ca_file` set): the listener uses `RequireAndVerifyClientCert`, so every connection — including `/health` and `/metrics` — must present a client certificate that chains to that CA. Clients without a certificate, or with one from another CA, are rejected during the TLS handshake, before any HTTP route runs. The WebSocket handler additionally checks `r.TLS.VerifiedChains` as defence in depth: a certificate that was merely presented by a listener configured `RequestClientCert` is not enough.
 
 Mutual TLS and bearer-token auth are **mutually exclusive**: a client certificate is the only supported identity when `client_ca_file` is set. Configuring both fails at startup with an error naming the conflicting keys, never with an ambiguous half-enabled state.
 

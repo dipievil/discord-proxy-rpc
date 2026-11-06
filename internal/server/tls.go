@@ -2,11 +2,8 @@ package server
 
 import (
 	"crypto/tls"
-	"crypto/x509"
-	"fmt"
 	"net"
 	"net/http"
-	"os"
 
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/internal/config"
 )
@@ -14,38 +11,10 @@ import (
 // NewTLSConfig builds the listener TLS configuration from server.tls. It
 // returns nil when TLS is disabled. A configured client CA switches the
 // listener to mutual TLS: clients must present a certificate chained to it.
+// Certificate material is parsed by config.TLSConfig.Load, the same parser
+// config validation uses, so a file that validates is the file that serves.
 func NewTLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
-	if !cfg.Enabled {
-		return nil, nil
-	}
-
-	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("server.tls: loading certificate pair (cert_file %q, key_file %q): %w", cfg.CertFile, cfg.KeyFile, err)
-	}
-
-	tlsCfg := &tls.Config{
-		MinVersion:   tls.VersionTLS12,
-		Certificates: []tls.Certificate{cert},
-	}
-
-	if cfg.ClientCAFile == "" {
-		return tlsCfg, nil
-	}
-
-	caPEM, err := os.ReadFile(cfg.ClientCAFile)
-	if err != nil {
-		return nil, fmt.Errorf("server.tls.client_ca_file %q: %w", cfg.ClientCAFile, err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("server.tls.client_ca_file %q contains no valid PEM certificates", cfg.ClientCAFile)
-	}
-
-	tlsCfg.ClientCAs = pool
-	tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
-
-	return tlsCfg, nil
+	return cfg.Load()
 }
 
 // Serve runs srv on ln, over TLS when tlsCfg is non-nil. Certificate loading

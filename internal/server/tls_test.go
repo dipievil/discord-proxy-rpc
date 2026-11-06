@@ -395,3 +395,49 @@ func TestWSHandlerRequiresClientCertificate(t *testing.T) {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
 }
+
+// TestWSHandlerRejectsUnverifiedClientCertificate pins the difference between a
+// presented and a verified client certificate. A listener configured with
+// tls.RequestClientCert puts whatever the client sent into r.TLS.PeerCertificates
+// without validating it, so the handler must inspect VerifiedChains — the field
+// that is only populated after the chain is checked against ClientCAs — and
+// still answer 401.
+func TestWSHandlerRejectsUnverifiedClientCertificate(t *testing.T) {
+	material := newTLSTestMaterial(t)
+
+	serverCert, err := tls.LoadX509KeyPair(material.serverOnly.CertFile, material.serverOnly.KeyFile)
+	if err != nil {
+		t.Fatalf("load server pair: %v", err)
+	}
+
+	tlsCfg := &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequestClientCert,
+	}
+
+	_, addr := startTLSServer(t, tlsCfg, WithRequireClientCert())
+
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 5 * time.Second,
+		TLSClientConfig: &tls.Config{
+			MinVersion:   tls.VersionTLS12,
+			RootCAs:      material.roots,
+			Certificates: []tls.Certificate{material.wrongClientCert},
+		},
+	}
+
+	conn, resp, err := dialer.Dial("wss://"+addr+"/ws", nil)
+	if conn != nil {
+		conn.Close()
+	}
+	if err == nil {
+		t.Fatal("upgrade succeeded with an unverified client certificate, want 401")
+	}
+	if resp == nil {
+		t.Fatalf("dial error %v carries no HTTP response, want 401", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}

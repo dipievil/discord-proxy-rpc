@@ -63,7 +63,7 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	if h.requireClientCert && (r.TLS == nil || len(r.TLS.PeerCertificates) == 0) {
+	if h.requireClientCert && (r.TLS == nil || len(r.TLS.VerifiedChains) == 0) {
 		h.logger.Warn("WebSocket upgrade rejected: client certificate required",
 			zap.String("remote", r.RemoteAddr))
 		writeAPIError(w, h.logger, http.StatusUnauthorized, ErrCodeUnauthorized, "client certificate required")

@@ -146,9 +146,9 @@ One listener serves every route above — dashboard, REST, `/ws`, `/metrics` and
 |--------------|-----------|
 | `enabled: false` (default) | Plain HTTP/WS, unchanged from v1.1 |
 | `enabled: true`, `client_ca_file` empty | Server-side TLS (`MinVersion` TLS 1.2). Clients verify the server; bearer auth remains optional |
-| `enabled: true`, `client_ca_file` set | Mutual TLS: `ClientAuth: RequireAndVerifyClientCert` with that PEM as `ClientCAs`, so every connection including health probes and `/metrics` needs a certificate chained to it. The WS handler also rejects upgrades whose `r.TLS.PeerCertificates` is empty (defence in depth) with HTTP 401 `AUTH_001`. Bearer auth is rejected as a conflicting config |
+| `enabled: true`, `client_ca_file` set | Mutual TLS: `ClientAuth: RequireAndVerifyClientCert` with that PEM as `ClientCAs`, so every connection including health probes and `/metrics` needs a certificate chained to it. The WS handler also rejects upgrades whose `r.TLS.VerifiedChains` is empty (defence in depth, so a listener that only requested a certificate cannot let an unverified one through) with HTTP 401 `AUTH_001`. Bearer auth is rejected as a conflicting config |
 
-- Env surface: `PROXY_TLS_ENABLED`, `PROXY_TLS_CERT_FILE`, `PROXY_TLS_KEY_FILE`, `PROXY_TLS_CLIENT_CA_FILE`.
+- Env surface: `PROXY_SERVER_TLS_ENABLED`, `PROXY_SERVER_TLS_CERT_FILE`, `PROXY_SERVER_TLS_KEY_FILE`, `PROXY_SERVER_TLS_CLIENT_CA_FILE`.
 - `/health`, `/healthz` and `/readyz` stay unauthenticated but are **TLS-only** when TLS is enabled; probes must switch to HTTPS, and with mTLS the prober needs a client certificate (kubelet probes normally cannot supply one, so probe in-pod or terminate mTLS upstream).
 - Validation order and failure modes: `enabled` requires `cert_file` and `key_file`; certificate settings with `enabled: false` are rejected rather than silently serving plaintext; `client_ca_file` + `auth.enabled` fails fast as mutually exclusive; the cert/key pair, CA readability and CA PEM validity are checked at config load (`server.tls` errors name the offending file), and the listener is built from the same material once at startup, so a bad PEM never reaches the accept loop.
 - Client certificates must carry the `clientAuth` extended key usage; `serverAuth`-only leafs are rejected by the handshake.
@@ -526,7 +526,7 @@ ENTRYPOINT ["discord-proxy"]
 |--------|------------|
 | Passive LAN sniffing of presence data or bearer tokens | `server.tls.enabled` encrypts every route over HTTPS/WSS |
 | Unauthorised LAN client reading presence or opening the WS | `server.tls.client_ca_file` requires a certificate chained to the configured CA; a missing or untrusted certificate fails the TLS handshake |
-| A config mistake silently serving plaintext or skipping client verification | Fail-fast validation (cert settings without `enabled`, missing cert/key, unreadable or invalid PEM, mTLS + bearer auth) plus the WS handler's `r.TLS.PeerCertificates` check |
+| A config mistake silently serving plaintext or skipping client verification | Fail-fast validation (cert settings without `enabled`, missing cert/key, unreadable or invalid PEM, mTLS + bearer auth) plus the WS handler's `r.TLS.VerifiedChains` check |
 | A probe route bypassing transport auth | Health probes stay unauthenticated but are TLS-only and, under mTLS, require a client certificate too |
 
 Out of scope: the local Discord IPC socket never leaves the host; private-key protection depends on filesystem permissions; there is no CRL/OCSP check (revocation means editing the client CA bundle and restarting); mTLS authenticates but does not authorise per client — any certificate from the CA can read all presence data, so issue client certificates narrowly. The dashboard follows the page scheme (`wss://`), but the TUI and the example consumer only verify with the system trust store and cannot present a client certificate, so mTLS clients are external tools (`curl`, `wscat`, Node, Go).

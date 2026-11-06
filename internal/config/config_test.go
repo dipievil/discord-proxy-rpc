@@ -429,10 +429,10 @@ server:
 }
 
 func TestTLSEnvVarOverrides(t *testing.T) {
-	t.Setenv("PROXY_TLS_ENABLED", "true")
-	t.Setenv("PROXY_TLS_CERT_FILE", "/etc/proxy/tls.crt")
-	t.Setenv("PROXY_TLS_KEY_FILE", "/etc/proxy/tls.key")
-	t.Setenv("PROXY_TLS_CLIENT_CA_FILE", "/etc/proxy/clients-ca.crt")
+	t.Setenv("PROXY_SERVER_TLS_ENABLED", "true")
+	t.Setenv("PROXY_SERVER_TLS_CERT_FILE", "/etc/proxy/tls.crt")
+	t.Setenv("PROXY_SERVER_TLS_KEY_FILE", "/etc/proxy/tls.key")
+	t.Setenv("PROXY_SERVER_TLS_CLIENT_CA_FILE", "/etc/proxy/clients-ca.crt")
 
 	v := newViperWithDefaults(t)
 	setupEnv(v)
@@ -599,10 +599,10 @@ func TestLoadConfigAcceptsMTLS(t *testing.T) {
 
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PROXY_DISCORD_CLIENT_ID", "123456789012345678")
-	t.Setenv("PROXY_TLS_ENABLED", "true")
-	t.Setenv("PROXY_TLS_CERT_FILE", material.certFile)
-	t.Setenv("PROXY_TLS_KEY_FILE", material.keyFile)
-	t.Setenv("PROXY_TLS_CLIENT_CA_FILE", material.caFile)
+	t.Setenv("PROXY_SERVER_TLS_ENABLED", "true")
+	t.Setenv("PROXY_SERVER_TLS_CERT_FILE", material.certFile)
+	t.Setenv("PROXY_SERVER_TLS_KEY_FILE", material.keyFile)
+	t.Setenv("PROXY_SERVER_TLS_CLIENT_CA_FILE", material.caFile)
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -618,10 +618,10 @@ func TestLoadConfigRejectsMTLSWithBearerAuth(t *testing.T) {
 
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PROXY_DISCORD_CLIENT_ID", "123456789012345678")
-	t.Setenv("PROXY_TLS_ENABLED", "true")
-	t.Setenv("PROXY_TLS_CERT_FILE", material.certFile)
-	t.Setenv("PROXY_TLS_KEY_FILE", material.keyFile)
-	t.Setenv("PROXY_TLS_CLIENT_CA_FILE", material.caFile)
+	t.Setenv("PROXY_SERVER_TLS_ENABLED", "true")
+	t.Setenv("PROXY_SERVER_TLS_CERT_FILE", material.certFile)
+	t.Setenv("PROXY_SERVER_TLS_KEY_FILE", material.keyFile)
+	t.Setenv("PROXY_SERVER_TLS_CLIENT_CA_FILE", material.caFile)
 	t.Setenv("PROXY_AUTH_ENABLED", "true")
 	t.Setenv("PROXY_AUTH_TOKEN", "secret")
 
@@ -757,5 +757,49 @@ func newTLSMaterial(t *testing.T) tlsMaterial {
 		certFile:     certFile,
 		keyFile:      keyFile,
 		otherKeyFile: otherKeyFile,
+	}
+}
+
+// TestTLSShortEnvNamesIgnored pins the env surface to the PROXY_SERVER_* naming
+// every other server.* key follows. PROXY_TLS_ENABLED used to be an undocumented
+// second name for server.tls.enabled: viper's automatic-env lookup already
+// derives PROXY_SERVER_TLS_ENABLED, so both names resolved and the shortcut won
+// when they disagreed. Only the conventional name is bound now.
+func TestTLSShortEnvNamesIgnored(t *testing.T) {
+	material := newTLSMaterial(t)
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PROXY_DISCORD_CLIENT_ID", "123456789012345678")
+	t.Setenv("PROXY_TLS_ENABLED", "true")
+	t.Setenv("PROXY_TLS_CERT_FILE", material.certFile)
+	t.Setenv("PROXY_TLS_KEY_FILE", material.keyFile)
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig(): %v", err)
+	}
+	if cfg.Server.TLS.Enabled {
+		t.Error("server.tls.enabled = true from PROXY_TLS_ENABLED, want the short name ignored")
+	}
+}
+
+// TestTLSConventionalEnvNameWins checks that the bound name is the one that
+// decides when a legacy short name is set to the opposite value.
+func TestTLSConventionalEnvNameWins(t *testing.T) {
+	material := newTLSMaterial(t)
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PROXY_DISCORD_CLIENT_ID", "123456789012345678")
+	t.Setenv("PROXY_TLS_ENABLED", "false")
+	t.Setenv("PROXY_SERVER_TLS_ENABLED", "true")
+	t.Setenv("PROXY_SERVER_TLS_CERT_FILE", material.certFile)
+	t.Setenv("PROXY_SERVER_TLS_KEY_FILE", material.keyFile)
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig(): %v", err)
+	}
+	if !cfg.Server.TLS.Enabled {
+		t.Error("server.tls.enabled = false despite PROXY_SERVER_TLS_ENABLED=true")
 	}
 }
