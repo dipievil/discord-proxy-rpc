@@ -102,7 +102,15 @@ jobs:
           # never succeed by outwaiting the holder: it must observe the
           # occupied port and exit non-zero. 300s >> 10s and the e2e job
           # timeout-minutes (10) still bounds the step.
-          python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",18765)); s.listen(1); time.sleep(300)' &
+          #
+          # SO_REUSEADDR only lets bind() succeed past sockets the previous
+          # step left in TIME_WAIT; it does not let a second listener share a
+          # port (that would be SO_REUSEPORT), so the port stays occupied and
+          # the guard keeps its meaning. The plain bind() it replaces made the
+          # guard flake: e2e's TLS phase closes connections server-side, one
+          # TIME_WAIT entry on 127.0.0.1:18765 is enough for EADDRINUSE, the
+          # holder dies, and e2e.sh then exits 0 on the free port.
+          python3 -c 'import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1",18765)); s.listen(1); time.sleep(300)' &
           HOLDER=$!
           sleep 1
           if scripts/e2e.sh >/dev/null 2>&1; then
