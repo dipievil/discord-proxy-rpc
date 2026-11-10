@@ -6,6 +6,10 @@
 //
 //	go run ./cmd/tray [-server http://127.0.0.1:8765] [-token <token>] [-interval 5s]
 //
+// An HTTPS proxy with a private CA or mTLS also takes -cacert, -cert and -key.
+// The token is best passed as $PROXY_AUTH_TOKEN: a flag value is visible in the
+// process list.
+//
 // Exit codes: 0 on a clean shutdown, 1 when the proxy cannot be watched or no
 // tray backend is available, 2 on a usage or configuration error.
 package main
@@ -30,8 +34,11 @@ var version = "dev"
 
 func main() {
 	server := flag.String("server", "", "proxy base URL (default $PROXY_URL or "+tray.DefaultServer+")")
-	token := flag.String("token", "", "bearer token (default $PROXY_TOKEN or $PROXY_AUTH_TOKEN)")
+	token := flag.String("token", "", "bearer token (prefer $PROXY_AUTH_TOKEN; a flag value is visible in the process list)")
 	interval := flag.Duration("interval", tray.DefaultInterval, "how often to poll the proxy's state")
+	caCert := flag.String("cacert", "", "PEM CA file to trust for an HTTPS proxy (default: system roots)")
+	clientCert := flag.String("cert", "", "PEM client certificate for a proxy that requires mTLS")
+	clientKey := flag.String("key", "", "PEM client key for -cert")
 	showVersion := flag.Bool("version", false, "print the tray version and exit")
 	flag.Parse()
 
@@ -47,12 +54,17 @@ func main() {
 		os.Exit(2)
 	}
 
-	client, err := tray.NewClient(opts.Server, opts.Token, nil)
+	httpClient, err := tray.NewHTTPClient(*caCert, *clientCert, *clientKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tray: %v\n", err)
 		os.Exit(2)
 	}
 
+	client, err := tray.NewClient(opts.Server, opts.Token, httpClient)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tray: %v\n", err)
+		os.Exit(2)
+	}
 	notifier, err := tray.NewNotifier()
 	if err != nil {
 		if errors.Is(err, tray.ErrUnsupportedPlatform) {
@@ -74,7 +86,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	logger.Info("tray started", "server", opts.Server, "interval", opts.Interval)
+	logger.Info("tray started", "config", opts.Redacted())
 	runErr := app.Run(ctx)
 	if closeErr := notifier.Close(); runErr == nil {
 		runErr = closeErr

@@ -379,12 +379,21 @@ Run it next to a proxy:
 # Local proxy without auth
 bin/discord-proxy-tray
 
-# Remote proxy with a token
-bin/discord-proxy-tray -server http://192.168.0.103:8765 -token <your-token>
+# Remote proxy with a token: keep it in the environment, not in argv
+PROXY_URL=http://192.168.0.103:8765 PROXY_AUTH_TOKEN=<your-token> bin/discord-proxy-tray
 
-# Or via environment variables
-PROXY_URL=http://192.168.0.103:8765 PROXY_TOKEN=<your-token> bin/discord-proxy-tray
+# HTTPS proxy with a private CA (self-signed or internal CA)
+PROXY_AUTH_TOKEN=<your-token> bin/discord-proxy-tray \
+  -server https://192.168.0.103:8765 -cacert /etc/discord-proxy-rpc/ca.pem
+
+# mTLS proxy: no bearer token, present a client certificate instead
+bin/discord-proxy-tray -server https://192.168.0.103:8765 \
+  -cacert /etc/discord-proxy-rpc/ca.pem \
+  -cert ~/.config/discord-proxy-rpc/tray.pem \
+  -key ~/.config/discord-proxy-rpc/tray-key.pem
 ```
+
+A `-token` on the command line is readable by every local user through `ps` and lands in shell history, so prefer `PROXY_AUTH_TOKEN`. `-cacert` replaces the system roots with that file; use it when the proxy certificate is self-signed or issued by an internal CA. `-cert`/`-key` are only needed when the proxy requires mutual TLS.
 
 It polls `GET /api/state` (default every 5 seconds) and changes the icon as soon as the state changes:
 
@@ -395,11 +404,15 @@ It polls `GET /api/state` (default every 5 seconds) and changes the icon as soon
 | `disconnected` | red disc, slash | `Discord Proxy RPC — Discord IPC disconnected` |
 | proxy unreachable | red disc, slash | `Discord Proxy RPC — proxy unreachable` |
 
+The proxy reports `connecting` while a Discord dial is in progress; the tray shows it as reconnecting, matching the dashboard's mapping.
+
 | Flag | Env | Default |
 |------|-----|---------|
 | `-server` | `PROXY_URL` | `http://127.0.0.1:8765` |
-| `-token` | `PROXY_TOKEN` (legacy, wins) / `PROXY_AUTH_TOKEN` | none |
-| `-interval` | — | `5s` (minimum `1s`, maximum `10m`) |
+| `-token` | `PROXY_AUTH_TOKEN` | none (prefer the env var) |
+| `-cacert` | — | system roots |
+| `-cert`, `-key` | — | none (no client certificate) |
+| `-interval` | — | `5s` (minimum `2s`, maximum `10m`) |
 | `-version` | — | prints the tray version |
 
 The tray is Linux-only for now. On Windows and macOS the binary still builds, but exits with `tray indicator is not supported on this platform yet`. Press `Ctrl+C` or send `SIGTERM` to stop it. If the icon does not appear, make sure the desktop session exports `DBUS_SESSION_BUS_ADDRESS` (a normal graphical login does) and that a StatusNotifierWatcher is running.
@@ -414,7 +427,7 @@ The tray is Linux-only for now. On Windows and macOS the binary still builds, bu
 |-------|--------|-------------|----------------|----------------|
 | `/` | GET | Dashboard SPA | `text/html` | — |
 | `/api/presence` | GET | Current presence snapshot | `{"source":"none\|ipc","activity":Activity\|null}` | — |
-| `/api/state` | GET | IPC connection state as JSON | `{"status":"connected\|disconnected\|reconnecting"}` | — |
+| `/api/state` | GET | IPC connection state as JSON | `{"status":"connected\|connecting\|reconnecting\|disconnected"}` | — |
 | `/health` | GET | **Rich liveness probe** — includes IPC state | `{"status":"ok","ipc":"<state>"}` | — |
 | `/healthz` | GET | **Minimal liveness probe** (k8s-compatible) | `{"status":"ok"}` | — |
 | `/readyz` | GET | **Readiness probe** — reflects IPC connectivity | `{"status":"ok","ipc":"connected"}` | `{"status":"not ready","ipc":"disconnected"}` |

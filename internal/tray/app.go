@@ -51,11 +51,15 @@ func (a *App) Run(ctx context.Context) error {
 	return nil
 }
 
-func (a *App) apply(update Update) {
+// apply renders one update and returns the backend error, so the poller retries
+// the transition on the next tick rather than forgetting it.
+func (a *App) apply(update Update) error {
 	if update.Err != nil {
 		a.logger.Warn("proxy state unavailable", "err", update.Err)
 	}
 	if err := a.notifier.Set(update.Status); err != nil {
 		a.logger.Error("updating tray indicator", "err", err)
+		return err
 	}
+	return nil
 }

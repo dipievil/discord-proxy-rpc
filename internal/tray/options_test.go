@@ -31,23 +31,21 @@ func TestResolveServer(t *testing.T) {
 
 func TestResolveToken(t *testing.T) {
 	t.Run("flag wins", func(t *testing.T) {
-		t.Setenv("PROXY_TOKEN", "legacy")
 		t.Setenv("PROXY_AUTH_TOKEN", "auth")
 		if got := ResolveToken("flag"); got != "flag" {
 			t.Errorf("ResolveToken = %q, want flag", got)
 		}
 	})
 
-	t.Run("legacy PROXY_TOKEN wins over auth token", func(t *testing.T) {
+	t.Run("legacy PROXY_TOKEN is ignored", func(t *testing.T) {
 		t.Setenv("PROXY_TOKEN", "legacy")
 		t.Setenv("PROXY_AUTH_TOKEN", "auth")
-		if got := ResolveToken(""); got != "legacy" {
-			t.Errorf("ResolveToken = %q, want legacy", got)
+		if got := ResolveToken(""); got != "auth" {
+			t.Errorf("ResolveToken = %q, want the supported PROXY_AUTH_TOKEN", got)
 		}
 	})
 
 	t.Run("PROXY_AUTH_TOKEN fallback", func(t *testing.T) {
-		t.Setenv("PROXY_TOKEN", "")
 		t.Setenv("PROXY_AUTH_TOKEN", "auth")
 		if got := ResolveToken(""); got != "auth" {
 			t.Errorf("ResolveToken = %q, want auth", got)
@@ -55,7 +53,6 @@ func TestResolveToken(t *testing.T) {
 	})
 
 	t.Run("none", func(t *testing.T) {
-		t.Setenv("PROXY_TOKEN", "")
 		t.Setenv("PROXY_AUTH_TOKEN", "")
 		if got := ResolveToken(""); got != "" {
 			t.Errorf("ResolveToken = %q, want empty", got)
@@ -127,10 +124,9 @@ func TestValidateInterval(t *testing.T) {
 
 func TestResolveOptions(t *testing.T) {
 	t.Setenv("PROXY_URL", "")
-	t.Setenv("PROXY_TOKEN", "")
 	t.Setenv("PROXY_AUTH_TOKEN", "")
 
-	options, err := ResolveOptions("proxy.local:8765", "", 0)
+	options, err := ResolveOptions("proxy.local:8765", "", DefaultInterval)
 	if err != nil {
 		t.Fatalf("ResolveOptions: %v", err)
 	}
@@ -144,6 +140,9 @@ func TestResolveOptions(t *testing.T) {
 		t.Errorf("Token = %q, want empty", options.Token)
 	}
 
+	if _, err := ResolveOptions("proxy.local:8765", "", 0); err == nil {
+		t.Error("ResolveOptions accepted a zero interval instead of rejecting it")
+	}
 	if _, err := ResolveOptions("proxy.local:8765", "", time.Millisecond); err == nil {
 		t.Error("ResolveOptions accepted an interval below the minimum")
 	}
@@ -154,7 +153,6 @@ func TestResolveOptions(t *testing.T) {
 
 func TestResolveOptionsUsesEnvToken(t *testing.T) {
 	t.Setenv("PROXY_URL", "")
-	t.Setenv("PROXY_TOKEN", "")
 	t.Setenv("PROXY_AUTH_TOKEN", "from-env")
 
 	options, err := ResolveOptions("", "", DefaultInterval)

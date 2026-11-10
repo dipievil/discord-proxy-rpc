@@ -10,6 +10,7 @@ func TestNormalizeState(t *testing.T) {
 	}{
 		{name: "connected", raw: "connected", want: StateConnected},
 		{name: "reconnecting", raw: "reconnecting", want: StateReconnecting},
+		{name: "connecting is a reconnect", raw: "connecting", want: StateReconnecting},
 		{name: "disconnected", raw: "disconnected", want: StateDisconnected},
 		{name: "case and spaces", raw: "  CONNECTED\n", want: StateConnected},
 		{name: "unknown", raw: "starting", want: StateUnreachable},

@@ -49,9 +49,12 @@ func (f *fakeTicker) ticks() <-chan time.Time { return f.ch }
 func (f *fakeTicker) stop()                   {}
 func (f *fakeTicker) tick()                   { f.ch <- time.Now() }
 
-func collectUpdates() (func(Update), <-chan Update) {
+func collectUpdates() (func(Update) error, <-chan Update) {
 	updates := make(chan Update, 16)
-	return func(update Update) { updates <- update }, updates
+	return func(update Update) error {
+		updates <- update
+		return nil
+	}, updates
 }
 
 func waitUpdate(t *testing.T, updates <-chan Update) Update {
@@ -86,7 +89,7 @@ func expectNoUpdate(t *testing.T, updates <-chan Update) {
 }
 
 func TestNewPollerValidation(t *testing.T) {
-	onUpdate := func(Update) {}
+	onUpdate := func(Update) error { return nil }
 
 	if _, err := NewPoller(nil, DefaultInterval, onUpdate); err == nil {
 		t.Error("NewPoller accepted a nil fetcher")
@@ -132,6 +135,48 @@ func TestPollEmitsFirstStatusOnly(t *testing.T) {
 	fetcher.set(StateDisconnected, nil)
 	poller.Poll(context.Background())
 	expectNoUpdate(t, updates)
+}
+
+func TestPollRetriesFailedUpdate(t *testing.T) {
+	fetcher := &fakeFetcher{state: StateConnected}
+	failures := 1
+	calls := 0
+	onUpdate := func(Update) error {
+		calls++
+		if failures > 0 {
+			failures--
+			return errors.New("icon update failed")
+		}
+		return nil
+	}
+	poller, err := NewPoller(fetcher, DefaultInterval, onUpdate)
+	if err != nil {
+		t.Fatalf("NewPoller: %v", err)
+	}
+
+	update := poller.Poll(context.Background())
+	if update.Err == nil {
+		t.Fatal("Err = nil, want the notifier failure to be reported")
+	}
+	if calls != 1 {
+		t.Fatalf("callback calls = %d, want 1", calls)
+	}
+
+	// The status was not recorded as displayed, so the same state is retried.
+	if update := poller.Poll(context.Background()); update.Err != nil {
+		t.Fatalf("retry Err = %v, want nil", update.Err)
+	}
+	if calls != 2 {
+		t.Fatalf("callback calls = %d, want 2", calls)
+	}
+
+	// Now that the update was displayed, an unchanged status is not repeated.
+	if update := poller.Poll(context.Background()); update.Err != nil {
+		t.Fatalf("third poll Err = %v, want nil", update.Err)
+	}
+	if calls != 2 {
+		t.Errorf("callback calls = %d, want 2: an unchanged status was re-sent", calls)
+	}
 }
 
 func TestPollMapsErrorsToDisconnectedIcon(t *testing.T) {

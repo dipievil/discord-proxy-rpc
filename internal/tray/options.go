@@ -14,8 +14,11 @@ const (
 	DefaultServer = "http://127.0.0.1:8765"
 	// DefaultInterval is how often the tray polls /api/state by default.
 	DefaultInterval = 5 * time.Second
-	// MinInterval keeps the tray from hammering the proxy.
-	MinInterval = time.Second
+	// MinInterval keeps the tray from hammering the proxy: /api/state shares
+	// the server's per-IP budget (60 requests per minute by default) with the
+	// dashboard, so a 2s floor leaves room for a browser tab instead of
+	// consuming the whole budget.
+	MinInterval = 2 * time.Second
 	// MaxInterval keeps a stale icon from looking like a live one.
 	MaxInterval = 10 * time.Minute
 
@@ -42,15 +45,13 @@ func ResolveServer(flagValue string) string {
 	return DefaultServer
 }
 
-// ResolveToken picks the bearer token with the same precedence as the other
-// proxy clients: the -token flag, else $PROXY_TOKEN (legacy, wins when set),
-// else $PROXY_AUTH_TOKEN.
+// ResolveToken picks the bearer token with the same precedence as the proxy
+// server: the -token flag, else $PROXY_AUTH_TOKEN. The legacy $PROXY_TOKEN was
+// removed in task 9.6 and is not read, so a stale value cannot shadow the real
+// token.
 func ResolveToken(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
-	}
-	if legacy := os.Getenv("PROXY_TOKEN"); legacy != "" {
-		return legacy
 	}
 	return os.Getenv("PROXY_AUTH_TOKEN")
 }
@@ -79,7 +80,7 @@ func NormalizeServer(raw string) (string, error) {
 		return "", fmt.Errorf("server URL %q has no host", raw)
 	}
 	if parsed.User != nil {
-		return "", errors.New("server URL must not embed credentials: pass the token with -token or $PROXY_TOKEN")
+		return "", errors.New("server URL must not embed credentials: pass the token with -token or $PROXY_AUTH_TOKEN")
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", fmt.Errorf("server URL %q must not carry a query or fragment", raw)
@@ -106,9 +107,6 @@ func ResolveOptions(serverFlag, tokenFlag string, interval time.Duration) (Optio
 	server, err := NormalizeServer(ResolveServer(serverFlag))
 	if err != nil {
 		return Options{}, err
-	}
-	if interval == 0 {
-		interval = DefaultInterval
 	}
 	if err := ValidateInterval(interval); err != nil {
 		return Options{}, err

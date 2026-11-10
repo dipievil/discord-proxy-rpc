@@ -10,9 +10,9 @@ package tray
 import "strings"
 
 // ProxyState is the Discord IPC state as reported by GET /api/state. The proxy
-// serves "connected", "reconnecting" or "disconnected"; StateUnreachable is a
-// client-side value for a proxy that answered with something else or not at
-// all.
+// serves "connected", "reconnecting", "disconnected" or "connecting";
+// StateUnreachable is a client-side value for a proxy that answered with
+// something else or not at all.
 type ProxyState string
 
 const (
@@ -20,6 +20,11 @@ const (
 	StateReconnecting ProxyState = "reconnecting"
 	StateDisconnected ProxyState = "disconnected"
 	StateUnreachable  ProxyState = "unreachable"
+
+	// stateConnecting is the proxy's own value for a Discord dial in progress
+	// (internal/ipc/client.go). The server reports it as reconnecting as well
+	// (internal/server/http.go, connectionStateFromIPC), and so does the tray.
+	stateConnecting ProxyState = "connecting"
 )
 
 // Icon identifies the tray icon to render. The Linux StatusNotifierItem
@@ -54,14 +59,15 @@ type Status struct {
 // trayTitle is the human-readable product name shown in tooltips.
 const trayTitle = "Discord Proxy RPC"
 
-// NormalizeState maps a raw /api/state payload to a known state. An empty or
-// unrecognized value means the proxy cannot be trusted to report health, so it
-// is treated as unreachable rather than guessing.
+// NormalizeState maps a raw /api/state payload to a known state. A dial in
+// progress ("connecting") is a reconnect, matching the server's WebSocket
+// mapping. An empty or unrecognized value means the proxy cannot be trusted to
+// report health, so it is treated as unreachable rather than guessing.
 func NormalizeState(raw string) ProxyState {
 	switch ProxyState(strings.ToLower(strings.TrimSpace(raw))) {
 	case StateConnected:
 		return StateConnected
-	case StateReconnecting:
+	case StateReconnecting, stateConnecting:
 		return StateReconnecting
 	case StateDisconnected:
 		return StateDisconnected

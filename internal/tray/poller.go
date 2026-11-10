@@ -35,7 +35,7 @@ func newRealTicker(interval time.Duration) ticker {
 type Poller struct {
 	fetcher   Fetcher
 	interval  time.Duration
-	onUpdate  func(Update)
+	onUpdate  func(Update) error
 	newTicker func(time.Duration) ticker
 
 	mu   sync.Mutex
@@ -44,7 +44,7 @@ type Poller struct {
 }
 
 // NewPoller validates its inputs and returns a poller ready for Run.
-func NewPoller(fetcher Fetcher, interval time.Duration, onUpdate func(Update)) (*Poller, error) {
+func NewPoller(fetcher Fetcher, interval time.Duration, onUpdate func(Update) error) (*Poller, error) {
 	return newPoller(fetcher, interval, onUpdate, newRealTicker)
 }
 
@@ -53,7 +53,7 @@ func NewPoller(fetcher Fetcher, interval time.Duration, onUpdate func(Update)) (
 func newPoller(
 	fetcher Fetcher,
 	interval time.Duration,
-	onUpdate func(Update),
+	onUpdate func(Update) error,
 	newTicker func(time.Duration) ticker,
 ) (*Poller, error) {
 	if fetcher == nil {
@@ -77,8 +77,10 @@ func newPoller(
 }
 
 // Poll fetches the state once and reports it when it differs from the last
-// reported status. A cancelled context is not a status transition: the tray is
-// shutting down, so no update is reported.
+// displayed status. The status is remembered only after the callback succeeds,
+// so a failed tray update is retried on the next tick instead of being lost. A
+// cancelled context is not a status transition: the tray is shutting down, so
+// no update is reported.
 func (p *Poller) Poll(ctx context.Context) Update {
 	state, err := p.fetcher.State(ctx)
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -88,15 +90,20 @@ func (p *Poller) Poll(ctx context.Context) Update {
 
 	p.mu.Lock()
 	changed := !p.seen || update.Status != p.last
-	if changed {
-		p.seen = true
-		p.last = update.Status
-	}
 	p.mu.Unlock()
-
-	if changed {
-		p.onUpdate(update)
+	if !changed {
+		return update
 	}
+
+	if updateErr := p.onUpdate(update); updateErr != nil {
+		update.Err = errors.Join(update.Err, updateErr)
+		return update
+	}
+
+	p.mu.Lock()
+	p.seen = true
+	p.last = update.Status
+	p.mu.Unlock()
 	return update
 }
 

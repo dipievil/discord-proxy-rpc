@@ -13,10 +13,12 @@ import (
 )
 
 type fakeNotifier struct {
-	mu     sync.Mutex
-	err    error
-	closed bool
-	status chan Status
+	mu       sync.Mutex
+	err      error
+	failures int
+	calls    int
+	closed   bool
+	status   chan Status
 }
 
 func newFakeNotifier() *fakeNotifier {
@@ -25,10 +27,21 @@ func newFakeNotifier() *fakeNotifier {
 
 func (n *fakeNotifier) Set(status Status) error {
 	n.mu.Lock()
+	n.calls++
 	err := n.err
+	if n.failures > 0 {
+		n.failures--
+		err = errors.New("icon update failed")
+	}
 	n.mu.Unlock()
 	n.status <- status
 	return err
+}
+
+func (n *fakeNotifier) callsCount() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.calls
 }
 
 func (n *fakeNotifier) Close() error {
@@ -144,10 +157,41 @@ func TestAppFollowsConnectedToDisconnectedTransition(t *testing.T) {
 	waitClosed(t, done)
 }
 
-func TestAppIgnoresNotifierFailures(t *testing.T) {
+func TestAppRetriesFailedNotifierUpdate(t *testing.T) {
 	fetcher := &fakeFetcher{state: StateConnected}
 	notifier := newFakeNotifier()
-	notifier.err = errors.New("icon update failed")
+	notifier.failures = 1
+
+	app, err := NewApp(fetcher, notifier, DefaultInterval, testLogger())
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	poller, err := newPoller(app.fetcher, app.interval, app.apply, app.newTicker)
+	if err != nil {
+		t.Fatalf("newPoller: %v", err)
+	}
+
+	ctx := context.Background()
+	if update := poller.Poll(ctx); update.Err == nil {
+		t.Fatal("first Poll Err = nil, want the notifier failure")
+	}
+	if update := poller.Poll(ctx); update.Err != nil {
+		t.Fatalf("retry Poll Err = %v, want nil", update.Err)
+	}
+	if calls := notifier.callsCount(); calls != 2 {
+		t.Fatalf("notifier calls = %d, want 2: the failed update was not retried", calls)
+	}
+
+	poller.Poll(ctx)
+	if calls := notifier.callsCount(); calls != 2 {
+		t.Errorf("notifier calls = %d, want 2: an unchanged status was re-sent", calls)
+	}
+}
+
+func TestAppKeepsRunningAfterNotifierFailure(t *testing.T) {
+	fetcher := &fakeFetcher{state: StateConnected}
+	notifier := newFakeNotifier()
+	notifier.failures = 1
 
 	app, err := NewApp(fetcher, notifier, DefaultInterval, testLogger())
 	if err != nil {
@@ -165,6 +209,8 @@ func TestAppIgnoresNotifierFailures(t *testing.T) {
 		}
 	}()
 
+	waitStatus(t, notifier.status, StateConnected)
+	fakeTick.tick()
 	waitStatus(t, notifier.status, StateConnected)
 	cancel()
 	waitClosed(t, done)
