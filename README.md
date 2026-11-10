@@ -144,15 +144,11 @@ Link-local IPv6 addresses are shown as a count (`(+N link-local)`) because they 
 
 ### Option 1: Download a release
 
-1. Download the latest binary for your platform from [Releases](https://github.com/discord-proxy-rpc/discord-proxy-rpc/releases).
-2. Create a `config.yaml` (see [Configuration Reference](#configuration-reference)):
-   ```yaml
-   discord:
-     client_id: "YOUR_DISCORD_APP_ID"
-   ```
+1. Download the latest `.zip` for your platform from [Releases](https://github.com/discord-proxy-rpc/discord-proxy-rpc/releases) and unzip it. The archive also contains `discover`, `LICENSE` and `README.md`; `checksums.txt` on the release page lists the SHA-256 of every archive.
+2. Copy the bundled `config.example.yaml` to `config.yaml` next to the binary, then set `discord.client_id` to your Discord Application ID (see [Configuration Reference](#configuration-reference)). Every other key already has a working default.
 3. Run the binary:
    ```bash
-   ./discord-proxy-linux-amd64
+   ./discord-proxy
    ```
 4. Open `http://<your-host-ip>:8765` in any browser on your LAN.
 
@@ -252,8 +248,9 @@ server:
   read_timeout: 10s                      # HTTP read timeout
   write_timeout: 10s                     # HTTP write timeout
   max_ws_connections: 100                # Cap on concurrent WebSocket clients
-  rate_limit_per_ip: 10                  # Max WS upgrades per IP within the window
+  rate_limit_per_ip: 60                  # Max requests per IP within the window (dashboard, REST, WS)
   rate_limit_window: 1m                  # Rate-limit window
+  trusted_proxies: []                    # CIDRs whose X-Forwarded-For is honoured (empty = RemoteAddr only)
 
 auth:
   enabled: false                         # Enable Bearer token auth
@@ -291,8 +288,9 @@ Every config key can be set via an environment variable with the `PROXY_` prefix
 | `server.read_timeout` | `PROXY_SERVER_READ_TIMEOUT` | `10s` |
 | `server.write_timeout` | `PROXY_SERVER_WRITE_TIMEOUT` | `10s` |
 | `server.max_ws_connections` | `PROXY_SERVER_MAX_WS_CONNECTIONS` | `100` |
-| `server.rate_limit_per_ip` | `PROXY_SERVER_RATE_LIMIT_PER_IP` | `10` |
+| `server.rate_limit_per_ip` | `PROXY_SERVER_RATE_LIMIT_PER_IP` | `60` |
 | `server.rate_limit_window` | `PROXY_SERVER_RATE_LIMIT_WINDOW` | `1m` |
+| `server.trusted_proxies` | `PROXY_SERVER_TRUSTED_PROXIES` | `""` (comma-separated CIDRs; empty = use the TCP peer) |
 | `auth.enabled` | `PROXY_AUTH_ENABLED` | `false` |
 | `auth.token` | `PROXY_AUTH_TOKEN` | `""` |
 | `mdns.enabled` | `PROXY_MDNS_ENABLED` | `true` |
@@ -428,6 +426,10 @@ The tray is Linux-only for now. On Windows and macOS the binary still builds, bu
 - `/readyz` — Readiness probe for Kubernetes; returns 200 only when IPC is connected, 503 otherwise
 
 **Access control:** with `auth.enabled: true`, `/`, `/index.html`, the static assets, `/api/presence` and `/api/state` require the token (`Authorization: Bearer <token>` or `?token=<token>`); an unauthenticated request gets HTTP 401 — a JSON `AUTH_001` body on `/api/*`, plain text on the dashboard. `/health`, `/healthz` and `/readyz` are never auth-gated.
+
+**Rate limiting:** the per-IP limiter (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 60 requests per minute) covers the dashboard and its static assets, `/api/presence`, `/api/state` and the WebSocket upgrade. All of them share one budget per client IP, and the check runs before auth, so a flood is rejected before the token comparison. A request over the limit gets HTTP 429 with a `Retry-After` header carrying the remaining seconds of the window and `Cache-Control: no-store` so a cached asset response cannot replay the rejection; REST and WebSocket routes answer the `REQ_002` JSON envelope, while the dashboard answers plain text because the browser renders that body directly. The first rejection from an IP in a window is logged at warning level and later ones at debug, so a reconnecting tab cannot flood the log; `discord_proxy_rate_limit_rejections_total` carries the exact count. `/health`, `/healthz`, `/readyz` and `/metrics` are exempt so container probes and Prometheus scrapes keep answering while an IP is limited. Setting `server.rate_limit_per_ip` to `0` or a negative value disables limiting (a non-positive window does too). A dashboard page load costs four requests (HTML, CSS, JS and the WebSocket upgrade), so the default budget covers several reloads and reconnect attempts from one IP.
+
+**Behind a reverse proxy or ingress:** the limiter keys on the TCP peer by default. With a proxy in front, every client would share the proxy's budget, so list the proxy's addresses in `server.trusted_proxies` (CIDR blocks, e.g. `["10.0.0.0/8"]`); the last `X-Forwarded-For` hop that is not itself trusted then becomes the client. An empty list ignores forwarding headers entirely, so a client cannot forge its identity by sending one.
 
 #### Kubernetes Probes
 
@@ -604,10 +606,10 @@ The `-token` flag is only needed when the proxy runs with `auth.enabled: true`; 
 Releases are automated via GitHub Actions using semantic-release:
 
 1. Push to `main` triggers the release workflow.
-2. The `version` job runs semantic-release to determine the version bump (based on conventional commit messages in squash-merged PRs) and creates a Git tag.
-3. If a new release is detected, the `build` job cross-compiles binaries for five targets (Linux amd64/arm64, Windows amd64, macOS amd64/arm64).
-4. The `draft-release` job creates a draft GitHub Release with the generated release notes and attaches the binaries.
-5. Review the draft release, then publish it when ready.
+2. The `version` job runs semantic-release to determine the version bump (based on conventional commit messages in squash-merged PRs), creates the Git tag and publishes the GitHub Release with the generated notes.
+3. If a new release is detected, the `goreleaser` job cross-compiles both binaries for five targets (Linux amd64/arm64, Windows amd64, macOS amd64/arm64) and uploads one `.zip` per target.
+4. Each zip holds `discord-proxy`, `discover`, `config.example.yaml`, `LICENSE` and `README.md`; `checksums.txt` carries the SHA-256 of every archive.
+5. GoReleaser runs with `release.mode: append`, so the assets attach to the release semantic-release already published instead of failing on an existing release.
 
 ### Docker build
 

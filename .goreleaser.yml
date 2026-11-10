@@ -59,11 +59,14 @@ builds:
 archives:
   - id: default
     formats:
-      - tar.gz
-    format_overrides:
-      - goos: windows
-        formats:
-          - zip
+      - zip
+    files:
+      - src: configs/config.example.yaml
+        dst: config.example.yaml
+      - src: LICENSE
+        dst: LICENSE
+      - src: README.md
+        dst: README.md
 
 checksum:
   name_template: checksums.txt
@@ -75,4 +78,5 @@ release:
   github:
     owner: dipievil
     name: discord-proxy-rpc
+  mode: append
   make_latest: true

@@ -130,9 +130,13 @@ When `metrics.enabled: true`, the server registers `/metrics` (Prometheus text f
 | `discord_proxy_ws_connected_clients` | gauge | `Hub.ClientCount()` at scrape time |
 | `discord_proxy_presence_coalesced_sends_total` | counter | presence subscription callback (fires once per coalesced flush) |
 | `discord_proxy_ipc_connected` | gauge (0/1) | IPC state getter at scrape time (`connected` ⇒ 1) |
-| `discord_proxy_rate_limit_rejections_total` | counter | `RateLimiter` denial counter |
+| `discord_proxy_rate_limit_rejections_total` | counter | `RateLimiter` denial counter (dashboard, REST and WS rejections) |
 
 **Access control:** when `auth.enabled: true`, `/`, `/index.html`, the embedded static assets, `/api/presence` and `/api/state` require the bearer token; `/health`, `/healthz` and `/readyz` stay open so probes work without credentials. API routes answer an unauthenticated request with the `AUTH_001` JSON envelope (HTTP 401), while the dashboard answers a plain-text 401.
+
+**Rate limiting:** a single per-IP limiter (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 60 requests per minute) guards the dashboard and its static assets, `/api/presence`, `/api/state` and the WebSocket upgrade; all routes share one budget per IP. The middleware runs before auth so unauthenticated floods are rejected without the constant-time token comparison. Rejections answer HTTP 429 with a `Retry-After` header in whole seconds and `Cache-Control: no-store`; REST and WS routes carry the `REQ_002` envelope, while the dashboard answers plain text for direct rendering in the tab. A rejection increments `discord_proxy_rate_limit_rejections_total`; the first rejection per IP per window is logged at warning level and later ones at debug, so a reconnect loop cannot flood the log. `/health`, `/healthz`, `/readyz` and `/metrics` are deliberately registered without the middleware: probes and Prometheus scrapes must keep working while an IP is limited, and they are not useful amplification targets. A limiter that is `nil` or has a non-positive rate or window is disabled. The default budget covers a dashboard load, which costs four requests (HTML, CSS, JS and the WS upgrade), plus several reloads and reconnect attempts.
+
+**Client identity:** the limiter keys on the TCP peer (`RemoteAddr`) by default. `server.trusted_proxies` lists CIDR blocks whose `X-Forwarded-For` is honoured; when the peer is trusted the limiter takes the last hop that is not itself trusted, so clients behind an ingress keep separate budgets and an untrusted client cannot forge its IP. An empty list ignores forwarding headers entirely.
 
 #### WebSocket Protocol
 
@@ -156,6 +160,10 @@ The server echoes the offered `proxy-token-*` subprotocol back on success so the
 
 `payload` on `presence` and `current` is a **presence snapshot** (see [Activity source](#activity-source)); `activity` is `null` whenever `source` is `"none"`. `client_id` (the Discord Application ID from `discord.client_id`) is always included on `state` and `current` messages — it is required at startup (task 9.3) — so clients can identify which Discord account the proxy is attached to.
 
+**State on subscribe.** A `subscribe` that includes `state` is answered with one `state` frame carrying the proxy's current IPC state, mapped from `/api/state` (`connected`, `reconnecting`, or `disconnected`), before any later push. The snapshot is produced by the same fan-out loop that delivers state pushes, so an older transition can never overtake it and leave the client on a stale state. The frame goes only to the subscribing client and includes `client_id`. A client must not infer IPC connectivity from the WebSocket being open: an open socket only means the proxy accepted the connection.
+
+**Terminal state.** `reconnecting` means the proxy will attempt another IPC session. When no further session will be attempted — `discord.auto_reconnect: false`, reconnect attempts exhausted, or the IPC client stopped for another reason — the proxy emits exactly one final `disconnected` and stops broadcasting `reconnecting`. That frame is queued with a blocking send, so a full broadcast buffer delays it instead of dropping it.
+
 **Client → Server**
 
 ```json
@@ -177,10 +185,10 @@ Error frames are sent in direct response to a client message that could not be p
 | `MSG_001` | `ErrCodeInvalidMessage` | Malformed JSON, missing/unknown `type`, unknown event in `subscribe`, or any parse failure |
 | `INT_001` | `ErrCodeInternal` | Internal server error (including a recovered panic) |
 | `REQ_001` | `ErrCodePayloadTooLarge` | Request body exceeds the 1 MiB cap (HTTP 413) |
-| `REQ_002` | `ErrCodeRateLimited` | WS upgrade rate limit exceeded (HTTP 429) |
+| `REQ_002` | `ErrCodeRateLimited` | Request rate limit exceeded on the dashboard, REST or WS upgrade (HTTP 429, with `Retry-After`) |
 | `REQ_003` | `ErrCodeTooManyConns` | Max concurrent WS connections reached (HTTP 503) |
 
-HTTP-level errors (auth failure, oversized body, rate limit, connection cap, recovered panic) use the same codes in a top-level JSON envelope: `{ "code": "<CODE>", "error": "<message>" }`. WS `error` frames instead nest them under `payload` as `{ "code", "message" }`.
+HTTP-level errors on the API and WS surface (auth failure, oversized body, rate limit, connection cap, recovered panic) use the same codes in a top-level JSON envelope: `{ "code": "<CODE>", "error": "<message>" }`; dashboard routes answer 401 and 429 as plain text because the browser renders the body directly. A rate-limit rejection also carries `Retry-After` with the remaining seconds in the current window and `Cache-Control: no-store`. WS `error` frames instead nest them under `payload` as `{ "code", "message" }`.
 
 **Presence Snapshot** (payload of `presence` / `current` and body of `/api/presence`)
 
@@ -275,8 +283,9 @@ server:
   read_timeout: 10s
   write_timeout: 10s
   max_ws_connections: 100    # cap on concurrent WebSocket clients
-  rate_limit_per_ip: 10      # max WS upgrades per IP within the window
+  rate_limit_per_ip: 60      # max requests per IP within the window (dashboard, REST, WS)
   rate_limit_window: 1m      # rate-limit window
+  trusted_proxies: []        # CIDRs whose X-Forwarded-For is honoured (empty = RemoteAddr only)
 
 auth:
   enabled: false
@@ -297,7 +306,7 @@ logging:
 - **Serving**: `//go:embed web/*` → single binary, no external files
 - **Tech**: Vanilla HTML/CSS/JS (no build step, no framework)
 - **Features**:
-  - Connection status indicator (● green/red)
+  - Connection status indicator (● green/red) driven by the proxy's `state` frames, not by the WebSocket opening
   - **Activity source notice** — shows "No activity source" when the snapshot reports `source: "none"`, instead of an empty activity card
   - Presence fields: Details, State, Timestamps (live countdown), Assets (images), Party, Buttons
   - Real-time updates via WebSocket
@@ -315,12 +324,13 @@ logging:
 ### 8. System Tray Indicator (`cmd/tray/`, `internal/tray/`)
 
 - **Backend**: KDE/StatusNotifierItem (`org.kde.StatusNotifierWatcher`) on the D-Bus session bus, via `github.com/godbus/dbus/v5` — pure Go, so `CGO_ENABLED=0` builds and releases stay unchanged (no GTK, no cgo).
-- **Status source**: polls `GET /api/state` every `-interval` (default `5s`), sending `Authorization: Bearer <token>` when a token is configured. The first result is applied immediately; later polls only reach the tray when the state changes.
-- **Mapping** (`internal/tray/status.go`): `connected` → green disc + check, `reconnecting` → amber disc + minus, `disconnected` → red disc + slash. An unreachable proxy, an HTTP error or an unknown `status` value reports `unreachable` with the disconnected icon and a "proxy unreachable" tooltip.
+- **Status source**: polls `GET /api/state` every `-interval` (default `5s`, minimum `2s`), sending `Authorization: Bearer <token>` when a token is configured. The first result is applied immediately; later polls only reach the tray when the state changes.
+- **Mapping** (`internal/tray/status.go`): `connected` → green disc + check, `reconnecting` → amber disc + minus, `disconnected` → red disc + slash. `connecting` (a Discord dial in progress) is shown as reconnecting, matching the server's WebSocket mapping. An unreachable proxy, an HTTP error or an unknown `status` value reports `unreachable` with the disconnected icon and a "proxy unreachable" tooltip.
 - **Icons**: generated ARGB32 pixmaps (22 px and 44 px) exported through the SNI `IconPixmap` and `ToolTip` properties, so no icon theme or asset files are needed.
 - **Platforms**: the Linux implementation is behind a `linux` build tag; other platforms build a stub that exits with "tray indicator is not supported on this platform yet", keeping `go build ./...` and all cross-compiles green.
-- **CLI**: `-server`, `-token`, `-interval`, `-version`; env fallbacks `PROXY_URL`, `PROXY_TOKEN` (legacy, wins) and `PROXY_AUTH_TOKEN`.
-- **Testing**: the D-Bus export itself is exercised only on a real desktop session (not testable headlessly). Everything else is unit tested without a bus: state normalization and mapping, icon pixmaps, URL/token/interval resolution, the HTTP client (including auth and failures) and the poll loop against `httptest`, including a connected → disconnected → unreachable transition.
+- **CLI**: `-server`, `-token`, `-cacert`, `-cert`, `-key`, `-interval`, `-version`; env fallbacks `PROXY_URL` and `PROXY_AUTH_TOKEN` (the legacy `PROXY_TOKEN` was removed in task 9.6).
+- **TLS**: `-cacert` replaces the system roots with a private CA file; `-cert`/`-key` present a client certificate for a proxy that requires mTLS (task 11.1). Plain `http://` keeps the system client.
+- **Testing**: the D-Bus export itself is exercised only on a real desktop session (not testable headlessly). Everything else is unit tested without a bus: state normalization and mapping, icon pixmaps, URL/token/interval resolution, the HTTP client (including auth, TLS with a private CA and mTLS, and failures) and the poll loop against `httptest`, including a connected → disconnected → unreachable transition and a retry after a failed tray update.
 
 ---
 
@@ -445,11 +455,11 @@ make tray
 
 - Trigger: push to `main`
 - Process:
-    1. `version` job runs semantic-release to determine version bump, creates Git tag.
-    2. If a new release, `build` job cross-compiles binaries for 5 platforms.
-    3. `draft-release` job creates a draft GitHub Release with the generated notes and uploads binaries.
-- Outputs: Linux (amd64, arm64), Windows (amd64), macOS (amd64, arm64); the tray binary (`discord-proxy-tray`) ships in the Linux archives
-- Artifacts: binaries attached to draft release (review before publishing)
+    1. `version` job runs semantic-release: computes the version bump, creates the Git tag and publishes the GitHub Release with generated notes.
+    2. If a new release, the `goreleaser` job runs `goreleaser release --clean` with `GORELEASER_CURRENT_TAG` set to that tag; `release.mode: append` attaches the archives to the release semantic-release created instead of failing on an existing release.
+- Outputs: one `.zip` per target — Linux (amd64, arm64), Windows (amd64), macOS (amd64, arm64); on Linux each archive also carries the tray binary (`discord-proxy-tray`)
+- Each archive carries everything a user needs: the proxy binaries (`discord-proxy` and `discover`), the tray on Linux, `config.example.yaml`, `LICENSE` and `README.md`
+- `checksums.txt` (SHA-256 of every archive) is attached to the release
 
 ### Docker
 
@@ -500,7 +510,7 @@ ENTRYPOINT ["discord-proxy"]
 - **Read-only**: No `SET_ACTIVITY` command exposed
 - **LAN only**: Binds to `0.0.0.0` by default; restrict via firewall or `host: "127.0.0.1"` + VPN (Tailscale)
 - **Optional token auth**: Enable `auth.enabled: true` + set `PROXY_AUTH_TOKEN` for shared-secret auth on the WS upgrade, REST endpoints, and dashboard; comparison is constant-time. Health probes (`/health`, `/healthz`, `/readyz`) stay unauthenticated so container/k8s probes keep working. The legacy `PROXY_TOKEN` env var was removed in task 9.6 — `PROXY_AUTH_TOKEN` is the sole env source
-- **WS rate limiting**: Per-IP limiter on WS upgrades (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 10 upgrades per minute per IP); excess upgrades get HTTP 429 `REQ_002`
+- **Per-IP rate limiting** -- `server.rate_limit_per_ip` / `server.rate_limit_window` (defaults: 60 requests per minute) throttle the dashboard, the REST endpoints (`/api/*`) and the WebSocket upgrade from one client IP, sharing a single budget. Excess requests get HTTP 429 `REQ_002` with a `Retry-After` header, `Cache-Control: no-store`, and a plain-text body on the dashboard. `/health`, `/healthz`, `/readyz` and `/metrics` are exempt so probes and scrapes keep working. Set the rate to `0` to disable it. Behind an ingress, `server.trusted_proxies` makes the limiter key on the forwarded client instead of the proxy address; the header is ignored otherwise, so it cannot be spoofed.
 - **Max WS connections**: Concurrent client cap (`server.max_ws_connections`, default 100); excess upgrades get HTTP 503 `REQ_003`
 - **Request body cap**: Requests declaring `Content-Length` over 1 MiB are rejected with HTTP 413 `REQ_001`; unknown-length (chunked) bodies are capped via `MaxBytesReader`, so any read past 1 MiB fails. The current handlers never read request bodies (all routes are read-only), so an oversized chunked body is ignored rather than rejected with 413
 - **Panic recovery**: `RecoveryMiddleware` wraps the HTTP mux (plus an inner recover in the WS handler); a panicking handler returns HTTP 500 `INT_001` instead of crashing the process
