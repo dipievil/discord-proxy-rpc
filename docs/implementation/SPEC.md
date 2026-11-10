@@ -321,6 +321,17 @@ logging:
   - Windows: `\\?\pipe\discord-ipc-{0..9}`
   - macOS: same as Linux
 
+### 8. System Tray Indicator (`cmd/tray/`, `internal/tray/`)
+
+- **Backend**: KDE/StatusNotifierItem (`org.kde.StatusNotifierWatcher`) on the D-Bus session bus, via `github.com/godbus/dbus/v5` — pure Go, so `CGO_ENABLED=0` builds and releases stay unchanged (no GTK, no cgo).
+- **Status source**: polls `GET /api/state` every `-interval` (default `5s`, minimum `2s`), sending `Authorization: Bearer <token>` when a token is configured. The first result is applied immediately; later polls only reach the tray when the state changes.
+- **Mapping** (`internal/tray/status.go`): `connected` → green disc + check, `reconnecting` → amber disc + minus, `disconnected` → red disc + slash. `connecting` (a Discord dial in progress) is shown as reconnecting, matching the server's WebSocket mapping. An unreachable proxy, an HTTP error or an unknown `status` value reports `unreachable` with the disconnected icon and a "proxy unreachable" tooltip.
+- **Icons**: generated ARGB32 pixmaps (22 px and 44 px) exported through the SNI `IconPixmap` and `ToolTip` properties, so no icon theme or asset files are needed.
+- **Platforms**: the Linux implementation is behind a `linux` build tag; other platforms build a stub that exits with "tray indicator is not supported on this platform yet", keeping `go build ./...` and all cross-compiles green.
+- **CLI**: `-server`, `-token`, `-cacert`, `-cert`, `-key`, `-interval`, `-version`; env fallbacks `PROXY_URL` and `PROXY_AUTH_TOKEN` (the legacy `PROXY_TOKEN` was removed in task 9.6).
+- **TLS**: `-cacert` replaces the system roots with a private CA file; `-cert`/`-key` present a client certificate for a proxy that requires mTLS (task 11.1). Plain `http://` keeps the system client.
+- **Testing**: the D-Bus export itself is exercised only on a real desktop session (not testable headlessly). Everything else is unit tested without a bus: state normalization and mapping, icon pixmaps, URL/token/interval resolution, the HTTP client (including auth, TLS with a private CA and mTLS, and failures) and the poll loop against `httptest`, including a connected → disconnected → unreachable transition and a retry after a failed tray update.
+
 ---
 
 ## Project Structure
@@ -332,8 +343,10 @@ discord-proxy-rpc/
 │   │   └── main.go           # Entry point, wiring, signal handling
 │   ├── ipc-capture/
 │   │   └── main.go           # Capture harness: records raw Discord IPC frames
-│   └── discover/
-│       └── main.go           # Discovery helper: browses the LAN for proxies via mDNS
+│   ├── discover/
+│   │   └── main.go           # Discovery helper: browses the LAN for proxies via mDNS
+│   └── tray/
+│       └── main.go           # System-tray indicator (Linux StatusNotifierItem)
 ├── internal/
 │   ├── config/
 │   │   └── config.go
@@ -355,6 +368,16 @@ discord-proxy-rpc/
 │   ├── mdns/
 │   │   ├── announce.go
 │   │   └── signal.go
+│   ├── tray/
+│   │   ├── app.go            # Poller + notifier wiring
+│   │   ├── client.go         # /api/state client
+│   │   ├── icons.go          # Generated ARGB32 pixmaps
+│   │   ├── notifier.go       # Notifier interface
+│   │   ├── notifier_linux.go # StatusNotifierItem over D-Bus (linux)
+│   │   ├── notifier_stub.go  # "not supported" stub (other platforms)
+│   │   ├── options.go        # Flag/env resolution and validation
+│   │   ├── poller.go         # Poll loop, emits only transitions
+│   │   └── status.go         # State -> icon + tooltip
 │   └── platform/
 │       └── ipc_path.go
 ├── web/
@@ -393,6 +416,7 @@ go 1.26.5
 require (
     github.com/dop251/goja v0.0.0-20241024094426-79f3a7efcdbd
     github.com/dragsbruh/gopresence v0.0.0-20260104125204-049c09d5d051
+    github.com/godbus/dbus/v5 v5.2.4
     github.com/google/uuid v1.6.0
     github.com/gorilla/websocket v1.5.3
     github.com/grandcat/zeroconf v1.0.0
@@ -416,6 +440,9 @@ GOOS=windows GOARCH=amd64 go build -o bin/discord-proxy-windows-amd64.exe ./cmd/
 
 # All platforms
 make build-all
+
+# System-tray indicator (Linux; other platforms build a stub)
+make tray
 ```
 
 ### CI (GitHub Actions — `.github/workflows/ci.yml`)
@@ -430,8 +457,8 @@ make build-all
 - Process:
     1. `version` job runs semantic-release: computes the version bump, creates the Git tag and publishes the GitHub Release with generated notes.
     2. If a new release, the `goreleaser` job runs `goreleaser release --clean` with `GORELEASER_CURRENT_TAG` set to that tag; `release.mode: append` attaches the archives to the release semantic-release created instead of failing on an existing release.
-- Outputs: one `.zip` per target — Linux (amd64, arm64), Windows (amd64), macOS (amd64, arm64)
-- Each archive carries everything a user needs: both binaries (`discord-proxy` and `discover`), `config.example.yaml`, `LICENSE` and `README.md`
+- Outputs: one `.zip` per target — Linux (amd64, arm64), Windows (amd64), macOS (amd64, arm64); on Linux each archive also carries the tray binary (`discord-proxy-tray`)
+- Each archive carries everything a user needs: the proxy binaries (`discord-proxy` and `discover`), the tray on Linux, `config.example.yaml`, `LICENSE` and `README.md`
 - `checksums.txt` (SHA-256 of every archive) is attached to the release
 
 ### Docker
@@ -509,5 +536,5 @@ ENTRYPOINT ["discord-proxy"]
 - Multiple Discord accounts (multiple IPC connections)
 - ~~Prometheus metrics endpoint (`/metrics`)~~ — implemented in v1.1 (task 10.1), see Metrics section
 - TUI dashboard (`bubbletea`)
-- System tray indicator (host machine)
+- ~~System tray indicator (host machine)~~ — implemented in v1.1 (task 10.3), Linux StatusNotifierItem
 - Encrypted WS (mTLS)

@@ -40,6 +40,21 @@ builds:
     ignore:
       - goos: windows
         goarch: arm64
+  - id: tray
+    main: ./cmd/tray
+    binary: discord-proxy-tray
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
 
 archives:
   - id: default
