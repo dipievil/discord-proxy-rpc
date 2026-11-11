@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os/signal"
 	"syscall"
@@ -81,6 +82,9 @@ func main() {
 	if cfg.Auth.Enabled {
 		opts = append(opts, server.WithAuth(server.BearerAuthFunc(cfg.Auth, logger)))
 	}
+	if cfg.Server.TLS.MTLSEnabled() {
+		opts = append(opts, server.WithRequireClientCert())
+	}
 	if metrics != nil {
 		opts = append(opts, server.WithMetrics(metrics))
 		logger.Info("Prometheus metrics enabled", zap.String("path", "/metrics"))
@@ -108,20 +112,33 @@ func main() {
 		}
 	}()
 
+	tlsCfg, err := server.NewTLSConfig(cfg.Server.TLS)
+	if err != nil {
+		logger.Fatal("configuring TLS", zap.Error(err))
+	}
+
 	if cfg.Mdns.Enabled {
 		adv, err := mdns.NewAdvertiser(cfg.Mdns, cfg.Server.Port, logger)
 		if err != nil {
 			logger.Fatal("creating mDNS advertiser", zap.Error(err))
 		}
-		if err := adv.Advertise(); err != nil {
+		if err := adv.WithTLSMode(cfg.Server.TLS.Mode()).Advertise(); err != nil {
 			logger.Fatal("advertising mDNS service", zap.Error(err))
 		}
 		defer adv.Shutdown()
 	}
 
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		logger.Fatal("creating listener", zap.String("addr", srv.Addr), zap.Error(err))
+	}
+
 	go func() {
-		logger.Info("HTTP server starting", zap.String("addr", srv.Addr))
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Info("HTTP server starting",
+			zap.String("addr", srv.Addr),
+			zap.String("tls", cfg.Server.TLS.Mode()),
+		)
+		if err := server.Serve(srv, ln, tlsCfg); err != nil && err != http.ErrServerClosed {
 			logger.Fatal("HTTP server failed", zap.Error(err))
 		}
 	}()

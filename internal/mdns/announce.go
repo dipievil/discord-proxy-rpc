@@ -19,6 +19,11 @@ const (
 	// TXTAPIVersion is the TXT record (a single key=value string) that
 	// carries the advertised API version.
 	TXTAPIVersion = "v=1"
+	// TXTTLS is the TXT key announcing the transport authentication mode:
+	// "server" for server-side TLS, "mtls" for mutual TLS. Its presence tells
+	// clients to connect with https/wss. DNS-SD has no scheme field, so this
+	// record is the only scheme signal.
+	TXTTLS = "tls"
 
 	fallbackName = "discord-proxy"
 )
@@ -26,10 +31,11 @@ const (
 var hostnameFunc = os.Hostname
 
 type Advertiser struct {
-	server *zeroconf.Server
-	cfg    config.MdnsConfig
-	port   int
-	logger *zap.Logger
+	server  *zeroconf.Server
+	cfg     config.MdnsConfig
+	port    int
+	tlsMode string
+	logger  *zap.Logger
 }
 
 func NewAdvertiser(cfg config.MdnsConfig, port int, logger *zap.Logger) (*Advertiser, error) {
@@ -50,6 +56,22 @@ func (a *Advertiser) IsEnabled() bool {
 	return a.cfg.Enabled
 }
 
+// WithTLSMode announces the transport scheme alongside the service. Call it
+// before Advertise; config.TLSModeOff or an empty mode is not advertised, so
+// discovery results keep meaning plain http unless the record says otherwise.
+func (a *Advertiser) WithTLSMode(mode string) *Advertiser {
+	a.tlsMode = mode
+	return a
+}
+
+func (a *Advertiser) txtRecords() []string {
+	txt := []string{TXTAPIVersion}
+	if a.tlsMode != "" && a.tlsMode != config.TLSModeOff {
+		txt = append(txt, TXTTLS+"="+a.tlsMode)
+	}
+	return txt
+}
+
 func (a *Advertiser) Advertise() error {
 	if !a.cfg.Enabled {
 		return nil
@@ -65,7 +87,7 @@ func (a *Advertiser) Advertise() error {
 		a.cfg.ServiceType,
 		Domain,
 		a.port,
-		[]string{TXTAPIVersion},
+		a.txtRecords(),
 		nil,
 	)
 	if err != nil {
@@ -77,6 +99,7 @@ func (a *Advertiser) Advertise() error {
 		zap.String("instance", instance),
 		zap.String("type", a.cfg.ServiceType),
 		zap.Int("port", a.port),
+		zap.String("tls", a.tlsMode),
 	)
 	return nil
 }
