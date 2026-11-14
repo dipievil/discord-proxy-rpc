@@ -488,7 +488,7 @@ make tray
     1. `version` job runs semantic-release: computes the version bump, creates the Git tag and publishes the GitHub Release with generated notes.
     2. If a new release, the `goreleaser` job runs `goreleaser release --clean` with `GORELEASER_CURRENT_TAG` set to that tag; `release.mode: append` attaches the archives to the release semantic-release created instead of failing on an existing release.
 - Outputs: one `.zip` per target — Linux (amd64, arm64), Windows (amd64), macOS (amd64, arm64); on Linux each archive also carries the tray binary (`discord-proxy-tray`)
-- Each archive carries everything a user needs: the proxy binaries (`discord-proxy` and `discover`), the tray on Linux, `config.example.yaml`, `LICENSE` and `README.md`
+- Each platform archive carries everything a user needs: the proxy binaries (`discord-proxy` and `discover`), `config.example.yaml`, `LICENSE` and `README.md`. The Linux tray ships in its own `discord-proxy-rpc-tray_<version>_linux_<arch>.zip` — a shared archive would have a different binary count per target, which goreleaser rejects
 - `checksums.txt` (SHA-256 of every archive) is attached to the release
 - The `dev` → `main` merge decides whether a release happens: its squash title (or a `Release-As:` footer) must be a bumping type (`feat:`, `fix:`, `feat!:`) — a `chore:` merge leaves semantic-release with no bump, so the tag and release are never created
 

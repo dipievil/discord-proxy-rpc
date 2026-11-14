@@ -60,9 +60,15 @@ builds:
       - arm64
 
 archives:
-  - id: default
+  # The tray exists on Linux only, so it cannot share an archive with builds that
+  # are produced for every platform: goreleaser rejects an archive whose binary
+  # count differs per target (see goreleaser.com/errors/multiple-binaries-archive).
+  - id: proxy
     formats:
       - zip
+    ids:
+      - discord-proxy
+      - discover
     files:
       - src: configs/config.example.yaml
         dst: config.example.yaml
@@ -70,6 +76,15 @@ archives:
         dst: LICENSE
       - src: README.md
         dst: README.md
+  - id: tray
+    formats:
+      - zip
+    ids:
+      - tray
+    name_template: "{{ .ProjectName }}-tray_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - src: LICENSE
+        dst: LICENSE
 
 checksum:
   name_template: checksums.txt
