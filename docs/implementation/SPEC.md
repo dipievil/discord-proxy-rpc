@@ -490,6 +490,7 @@ make tray
 - Outputs: one `.zip` per target — Linux (amd64, arm64), Windows (amd64), macOS (amd64, arm64); on Linux each archive also carries the tray binary (`discord-proxy-tray`)
 - Each archive carries everything a user needs: the proxy binaries (`discord-proxy` and `discover`), the tray on Linux, `config.example.yaml`, `LICENSE` and `README.md`
 - `checksums.txt` (SHA-256 of every archive) is attached to the release
+- The `dev` → `main` merge decides whether a release happens: its squash title (or a `Release-As:` footer) must be a bumping type (`feat:`, `fix:`, `feat!:`) — a `chore:` merge leaves semantic-release with no bump, so the tag and release are never created
 
 ### Docker
 
