@@ -142,7 +142,7 @@ Link-local IPv6 addresses are shown as a count (`(+N link-local)`) because they 
 
 ### Option 1: Download a release
 
-1. Download the latest `.zip` for your platform from [Releases](https://github.com/dipievil/discord-proxy-rpc/releases) and unzip it. The archive also contains `discover`, `LICENSE` and `README.md`; `checksums.txt` on the release page lists the SHA-256 of every archive.
+1. Download the latest `.zip` for your platform from [Releases](https://github.com/dipievil/discord-proxy-rpc/releases) and unzip it. The archive also contains `discover`, `LICENSE` and `README.md`; Linux users who want the tray grab the separate `discord-proxy-rpc-tray_<version>_linux_<arch>.zip`. `checksums.txt` on the release page lists the SHA-256 of every archive.
 2. Copy the bundled `config.example.yaml` to `config.yaml` next to the binary, then set `discord.client_id` to your Discord Application ID (see [Configuration Reference](#configuration-reference)). Every other key already has a working default.
 3. Run the binary:
    ```bash
