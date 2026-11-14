@@ -14,8 +14,14 @@ server:
   read_timeout: 10s
   write_timeout: 10s
   max_ws_connections: 100    # cap on concurrent WebSocket clients
-  rate_limit_per_ip: 10      # max WS upgrades per IP within the window
+  rate_limit_per_ip: 60      # max requests per IP within the window (dashboard, REST, WS)
   rate_limit_window: 1m      # rate-limit window
+  trusted_proxies: []        # CIDRs whose X-Forwarded-For is honoured (empty = RemoteAddr only)
+  tls:
+    enabled: false           # serve HTTPS/WSS instead of HTTP/WS
+    cert_file: ""            # PEM server certificate (chain)
+    key_file: ""             # PEM private key for cert_file
+    client_ca_file: ""       # PEM CA bundle; set = require and verify client certs (mTLS)
 
 auth:
   enabled: false

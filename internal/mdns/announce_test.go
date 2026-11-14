@@ -33,8 +33,8 @@ func TestNewAdvertiserEmptyServiceType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if a.cfg.ServiceType != defaultServiceType {
-		t.Errorf("service type = %q, want %q", a.cfg.ServiceType, defaultServiceType)
+	if a.cfg.ServiceType != DefaultServiceType {
+		t.Errorf("service type = %q, want %q", a.cfg.ServiceType, DefaultServiceType)
 	}
 }
 
@@ -106,22 +106,42 @@ func TestInstanceFallbackToDefault(t *testing.T) {
 }
 
 func TestTxtAPIVersionConstant(t *testing.T) {
-	if txtAPIVersion != "v=1" {
-		t.Errorf("txtAPIVersion = %q, want %q", txtAPIVersion, "v=1")
+	if TXTAPIVersion != "v=1" {
+		t.Errorf("TXTAPIVersion = %q, want %q", TXTAPIVersion, "v=1")
 	}
 }
 
-func TestTxtRecordIncludesVersion(t *testing.T) {
-	txtRecords := []string{txtAPIVersion}
-	found := false
-	for _, r := range txtRecords {
-		if r == "v=1" {
-			found = true
-			break
-		}
+func TestTXTRecordsTLSMode(t *testing.T) {
+	cases := []struct {
+		name string
+		mode string
+		want []string
+	}{
+		{name: "plaintext", want: []string{TXTAPIVersion}},
+		{name: "explicitly off", mode: config.TLSModeOff, want: []string{TXTAPIVersion}},
+		{name: "server tls", mode: config.TLSModeServer, want: []string{TXTAPIVersion, "tls=server"}},
+		{name: "mtls", mode: config.TLSModeMTLS, want: []string{TXTAPIVersion, "tls=mtls"}},
 	}
-	if !found {
-		t.Error("txt records should contain v=1")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := NewAdvertiser(config.MdnsConfig{ServiceType: DefaultServiceType}, 8765, zap.NewNop())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			got := a.WithTLSMode(tc.mode).txtRecords()
+			if len(got) != len(tc.want) {
+				t.Fatalf("txtRecords() = %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("txtRecords()[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+	if TXTTLS != "tls" {
+		t.Errorf("TXTTLS = %q, want %q", TXTTLS, "tls")
 	}
 }
 

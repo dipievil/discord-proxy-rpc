@@ -23,15 +23,50 @@ builds:
     ignore:
       - goos: windows
         goarch: arm64
+  - id: discover
+    main: ./cmd/discover
+    binary: discover
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+  - id: tray
+    main: ./cmd/tray
+    binary: discord-proxy-tray
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
 
 archives:
   - id: default
     formats:
-      - tar.gz
-    format_overrides:
-      - goos: windows
-        formats:
-          - zip
+      - zip
+    files:
+      - src: configs/config.example.yaml
+        dst: config.example.yaml
+      - src: LICENSE
+        dst: LICENSE
+      - src: README.md
+        dst: README.md
 
 checksum:
   name_template: checksums.txt
@@ -43,4 +78,5 @@ release:
   github:
     owner: dipievil
     name: discord-proxy-rpc
+  mode: append
   make_latest: true

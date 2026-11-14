@@ -15,11 +15,12 @@ var defaultUpgrader = websocket.Upgrader{
 }
 
 type WSHandler struct {
-	hub         *Hub
-	logger      *zap.Logger
-	auth        func(r *http.Request) bool
-	upgrader    *websocket.Upgrader
-	connTracker *ConnectionTracker
+	hub               *Hub
+	logger            *zap.Logger
+	auth              func(r *http.Request) bool
+	upgrader          *websocket.Upgrader
+	connTracker       *ConnectionTracker
+	requireClientCert bool
 }
 
 func NewWSHandler(hub *Hub, logger *zap.Logger) *WSHandler {
@@ -45,6 +46,11 @@ func (h *WSHandler) WithConnectionTracker(ct *ConnectionTracker) *WSHandler {
 	return h
 }
 
+func (h *WSHandler) WithRequireClientCert() *WSHandler {
+	h.requireClientCert = true
+	return h
+}
+
 func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -56,6 +62,13 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, h.logger, http.StatusInternalServerError, ErrCodeInternal, "internal server error")
 		}
 	}()
+
+	if h.requireClientCert && (r.TLS == nil || len(r.TLS.VerifiedChains) == 0) {
+		h.logger.Warn("WebSocket upgrade rejected: client certificate required",
+			zap.String("remote", r.RemoteAddr))
+		writeAPIError(w, h.logger, http.StatusUnauthorized, ErrCodeUnauthorized, "client certificate required")
+		return
+	}
 
 	if h.auth != nil && !h.auth(r) {
 		writeAPIError(w, h.logger, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized")

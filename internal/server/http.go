@@ -5,8 +5,12 @@ import (
 	"html"
 	"io"
 	"io/fs"
+	"math"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -29,6 +33,7 @@ type Server struct {
 	getIPCState        func() string
 	rateLimiter        *RateLimiter
 	connTracker        *ConnectionTracker
+	trustedProxies     []*net.IPNet
 }
 
 type ServerOption func(*Server)
@@ -72,6 +77,28 @@ func WithConnectionTracker(ct *ConnectionTracker) ServerOption {
 	}
 }
 
+// WithTrustedProxies lists the CIDR blocks whose X-Forwarded-For header is
+// honoured when resolving the rate-limit key. With no entry the TCP peer is
+// always the client, so a client cannot forge its identity; entries are
+// validated by the config loader and invalid ones are ignored here.
+func WithTrustedProxies(entries []string) ServerOption {
+	return func(s *Server) {
+		s.trustedProxies = parseTrustedProxies(entries)
+	}
+}
+
+func parseTrustedProxies(entries []string) []*net.IPNet {
+	networks := make([]*net.IPNet, 0, len(entries))
+	for _, entry := range entries {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(entry))
+		if err != nil {
+			continue
+		}
+		networks = append(networks, network)
+	}
+	return networks
+}
+
 func NewServer(hub *Hub, logger *zap.Logger, opts ...ServerOption) *Server {
 	s := &Server{
 		mux:                http.NewServeMux(),
@@ -93,18 +120,21 @@ func NewServer(hub *Hub, logger *zap.Logger, opts ...ServerOption) *Server {
 	}
 
 	s.hub.GetCurrentPresence = s.getCurrentPresence
+	s.hub.GetCurrentState = func() ConnectionState { return connectionStateFromIPC(s.getIPCState()) }
 
 	s.registerRoutes()
 	return s
 }
 
 func (s *Server) registerRoutes() {
-	s.mux.HandleFunc("/", s.requireAuth(s.handleDashboard, false))
-	s.mux.HandleFunc(s.wsPath, s.rateLimitWS(s.wsHandler.ServeHTTP))
-	s.mux.HandleFunc("/api/presence", s.requireAuth(s.handlePresence, true))
-	s.mux.HandleFunc("/api/state", s.requireAuth(s.handleState, true))
+	s.mux.HandleFunc("/", s.rateLimit(s.requireAuth(s.handleDashboard, false), false))
+	s.mux.HandleFunc(s.wsPath, s.rateLimit(s.wsHandler.ServeHTTP, true))
+	s.mux.HandleFunc("/api/presence", s.rateLimit(s.requireAuth(s.handlePresence, true), true))
+	s.mux.HandleFunc("/api/state", s.rateLimit(s.requireAuth(s.handleState, true), true))
 	// Health endpoints stay open on purpose: they are consumed by container
-	// and Kubernetes probes, which cannot carry the bearer token.
+	// and Kubernetes probes, which cannot carry the bearer token. /metrics is
+	// exempt for Prometheus scrapes that may run without credentials. Both are
+	// never subject to the per-IP HTTP rate limit.
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/readyz", s.handleReadyz)
@@ -179,22 +209,113 @@ func (s *Server) Close() {
 	}
 }
 
-func (s *Server) rateLimitWS(next http.HandlerFunc) http.HandlerFunc {
+// rateLimit applies the shared per-IP rate limiter to a data route: the
+// dashboard (and its static assets), the REST endpoints and the WebSocket
+// upgrade all draw from one budget per client, so switching surfaces never
+// bypasses the limit. It wraps authentication rather than the reverse, so an
+// unauthenticated flood is rejected before the token check; because the budget
+// is keyed by IP, a 401/429 distinction never reveals whether a token is valid.
+// apiRoute selects the rejection body: the standard JSON envelope for the REST
+// and WebSocket surface, plain text for the dashboard, which the browser
+// renders directly.
+//
+// Health probes and /metrics are registered without this middleware so they
+// keep answering while a client is rate limited.
+func (s *Server) rateLimit(next http.HandlerFunc, apiRoute bool) http.HandlerFunc {
+	if !s.rateLimiter.Enabled() {
+		return next
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.rateLimiter != nil {
-			ip := extractIP(r.RemoteAddr)
-			if !s.rateLimiter.Allow(ip) {
-				s.logger.Warn("WebSocket upgrade rate limited",
-					zap.String("ip", ip),
-					zap.String("remote", r.RemoteAddr),
-				)
+		ip := s.clientIP(r)
+		if !s.rateLimiter.Allow(ip) {
+			retryAfter := retryAfterSeconds(s.rateLimiter.RetryAfter(ip))
+			s.logRateLimited(ip, r.URL.Path, retryAfter)
+
+			w.Header().Set("Retry-After", retryAfter)
+			// A 429 for a static asset must not be replayed from a cache
+			// after the window has elapsed.
+			w.Header().Set("Cache-Control", "no-store")
+
+			if apiRoute {
 				writeAPIError(w, s.logger, http.StatusTooManyRequests,
 					ErrCodeRateLimited, "rate limit exceeded")
 				return
 			}
+			http.Error(w, "rate limit exceeded, retry in "+retryAfter+"s",
+				http.StatusTooManyRequests)
+			return
 		}
 		next(w, r)
 	}
+}
+
+// logRateLimited warns once per IP per window and logs further rejections at
+// debug level, so a reconnecting dashboard cannot flood the log; the rejection
+// metric carries the exact volume.
+func (s *Server) logRateLimited(ip, path, retryAfter string) {
+	fields := []zap.Field{
+		zap.String("ip", ip),
+		zap.String("path", path),
+		zap.String("retry_after", retryAfter+"s"),
+	}
+	if s.rateLimiter.MarkWarned(ip) {
+		s.logger.Warn("request rate limited", fields...)
+		return
+	}
+	s.logger.Debug("request rate limited", fields...)
+}
+
+// clientIP resolves the rate-limit key for a request. Without a trusted proxy
+// the TCP peer is the client. Behind a configured trusted proxy the last
+// X-Forwarded-For hop that is not itself trusted becomes the client, so a
+// single ingress does not collapse every client into one shared budget while
+// a client still cannot forge its identity by sending the header itself.
+func (s *Server) clientIP(r *http.Request) string {
+	peer := extractIP(r.RemoteAddr)
+	peerIP := net.ParseIP(peer)
+	if !s.isTrustedProxy(peerIP) {
+		return peer
+	}
+
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff == "" {
+		return peer
+	}
+
+	hops := strings.Split(xff, ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		ip := net.ParseIP(strings.TrimSpace(hops[i]))
+		if ip == nil {
+			break
+		}
+		if !s.isTrustedProxy(ip) {
+			return ip.String()
+		}
+	}
+	return peer
+}
+
+func (s *Server) isTrustedProxy(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	for _, network := range s.trustedProxies {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// retryAfterSeconds renders a Retry-After delay in whole seconds, rounding up
+// and never below one so a client always waits at least a second.
+func retryAfterSeconds(d time.Duration) string {
+	seconds := int(math.Ceil(d.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	return strconv.Itoa(seconds)
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -238,6 +359,20 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]string{"status": state}); err != nil {
 		s.logger.Error("failed to encode state response", zap.Error(err))
+	}
+}
+
+// connectionStateFromIPC maps the IPC client's state string (/api/state) onto
+// the connection states the WebSocket protocol carries. A dial in progress has
+// no WebSocket equivalent yet and is reported as reconnecting.
+func connectionStateFromIPC(state string) ConnectionState {
+	switch state {
+	case string(StateConnected):
+		return StateConnected
+	case string(StateReconnecting), "connecting":
+		return StateReconnecting
+	default:
+		return StateDisconnected
 	}
 }
 

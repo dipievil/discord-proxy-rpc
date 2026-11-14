@@ -5,7 +5,7 @@ BINARY_NAME := discord-proxy
 BIN_DIR     := bin
 MODULE      := github.com/discord-proxy-rpc/discord-proxy-rpc
 
-.PHONY: build build-linux build-windows build-all tui test lint run dev release clean e2e capture
+.PHONY: build build-linux build-windows build-all tui tray test lint run dev release clean e2e capture discover
 
 ## build: Build for current platform
 build:
@@ -14,6 +14,10 @@ build:
 ## tui: Build the terminal dashboard (TUI consumer) for the current platform
 tui:
 	go build -o $(BIN_DIR)/$(BINARY_NAME)-tui ./cmd/tui
+
+## tray: Build the system-tray indicator (Linux StatusNotifierItem)
+tray:
+	go build -o $(BIN_DIR)/$(BINARY_NAME)-tray ./cmd/tray
 
 ## build-linux: Build for Linux amd64
 build-linux:
@@ -83,3 +87,8 @@ e2e:
 ##          Optional: DURATION (default 60s), OUT (JSON Lines capture file)
 capture:
 	go run ./cmd/ipc-capture -client-id "$(CLIENT_ID)" -duration "$${DURATION:-60s}" $${OUT:+-out "$$OUT"}
+
+## discover: Browse the LAN for running proxies via mDNS
+##           Optional: TIMEOUT (default 5s), JSON (non-empty enables -json)
+discover:
+	go run ./cmd/discover -timeout "$${TIMEOUT:-5s}" $${JSON:+-json}

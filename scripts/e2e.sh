@@ -13,6 +13,11 @@ SKIP_UNIT="${E2E_SKIP_UNIT:-0}"
 # immediately. Any CI step that occupies the E2E_PORT must hold it for longer
 # than this deadline.
 STARTUP_TIMEOUT="${E2E_STARTUP_TIMEOUT:-10}"
+# CURL_TLS_ARGS carries the CA (and, for mTLS, the client pair) into every curl
+# call of the TLS phase, including the readiness probe. It is intentionally
+# expanded unquoted: it holds zero or more flags, never a single filename.
+CURL_TLS_ARGS=""
+TLS_DIR="/tmp/discord-proxy-e2e-tls"
 PID=""
 PASS=0
 FAIL=0
@@ -23,6 +28,7 @@ cleanup() {
         wait "$PID" 2>/dev/null || true
     fi
     rm -f "$BINARY" "$BINARY_LOG" "$COOKIE_JAR"
+    rm -rf "$TLS_DIR"
 }
 trap cleanup EXIT
 
@@ -39,6 +45,36 @@ summary() {
 dump_binary_log() {
     echo "  Binary output:"
     tail -20 "$BINARY_LOG" | sed 's/^/    /'
+}
+
+# wait_for_ready waits until the running $PID answers /health, failing the
+# suite when it exits or the deadline passes. It sets READY=1 on success.
+wait_for_ready() {
+    local desc="$1"
+
+    echo "  Waiting up to ${STARTUP_TIMEOUT}s for ${desc} on port ${PORT}..."
+    READY=0
+    local deadline=$((SECONDS + STARTUP_TIMEOUT))
+    while (( SECONDS < deadline )); do
+        if ! kill -0 "$PID" 2>/dev/null; then
+            local exit_code
+            set +e
+            wait "$PID"
+            exit_code=$?
+            set -e
+            PID=""
+            dump_binary_log
+            fail "Binary (${desc}) exited during startup (exit code ${exit_code})"
+            summary
+            exit 1
+        fi
+        if curl -sf --max-time 1 ${CURL_TLS_ARGS} "$BASE/health" >/dev/null 2>&1; then
+            READY=1
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
 }
 
 echo "=== Discord Proxy RPC - E2E Tests ==="
@@ -97,6 +133,7 @@ PROXY_DISCORD_AUTO_RECONNECT="false" \
 PROXY_SERVER_HOST="127.0.0.1" \
 PROXY_SERVER_PORT="$PORT" \
 PROXY_SERVER_WS_PATH="/ws" \
+PROXY_SERVER_RATE_LIMIT_PER_IP="1000" \
 PROXY_AUTH_ENABLED="false" \
 PROXY_MDNS_ENABLED="false" \
 PROXY_LOGGING_LEVEL="error" \
@@ -106,29 +143,7 @@ PID=$!
 
 BASE="http://127.0.0.1:${PORT}"
 
-echo "  Waiting up to ${STARTUP_TIMEOUT}s for server on port ${PORT}..."
-READY=0
-DEADLINE=$((SECONDS + STARTUP_TIMEOUT))
-while (( SECONDS < DEADLINE )); do
-    if ! kill -0 "$PID" 2>/dev/null; then
-        set +e
-        wait "$PID"
-        exit_code=$?
-        set -e
-        PID=""
-        dump_binary_log
-        fail "Binary exited during startup (exit code ${exit_code})"
-        summary
-        exit 1
-    fi
-    if curl -sf --max-time 1 "$BASE/health" >/dev/null 2>&1; then
-        READY=1
-        break
-    fi
-    sleep 0.5
-done
-
-if [[ "$READY" -eq 1 ]]; then
+if wait_for_ready "server"; then
     pass "Server became ready on port ${PORT}"
 
     HEALTH=$(curl -sf "$BASE/health" || true)
@@ -191,6 +206,7 @@ PROXY_DISCORD_AUTO_RECONNECT="false" \
 PROXY_SERVER_HOST="127.0.0.1" \
 PROXY_SERVER_PORT="$PORT" \
 PROXY_SERVER_WS_PATH="/ws" \
+PROXY_SERVER_RATE_LIMIT_PER_IP="1000" \
 PROXY_AUTH_ENABLED="true" \
 PROXY_AUTH_TOKEN="$AUTH_TOKEN" \
 PROXY_MDNS_ENABLED="false" \
@@ -199,29 +215,7 @@ PROXY_LOGGING_FORMAT="console" \
     "$BINARY" >"$BINARY_LOG" 2>&1 &
 PID=$!
 
-echo "  Waiting up to ${STARTUP_TIMEOUT}s for auth-enabled server on port ${PORT}..."
-READY=0
-DEADLINE=$((SECONDS + STARTUP_TIMEOUT))
-while (( SECONDS < DEADLINE )); do
-    if ! kill -0 "$PID" 2>/dev/null; then
-        set +e
-        wait "$PID"
-        exit_code=$?
-        set -e
-        PID=""
-        dump_binary_log
-        fail "Binary (auth-enabled) exited during startup (exit code ${exit_code})"
-        summary
-        exit 1
-    fi
-    if curl -sf --max-time 1 "$BASE/health" >/dev/null 2>&1; then
-        READY=1
-        break
-    fi
-    sleep 0.5
-done
-
-if [[ "$READY" -eq 1 ]]; then
+if wait_for_ready "auth-enabled server"; then
     pass "Auth-enabled server became ready on port ${PORT}"
 
     for ep in /health /healthz; do
@@ -289,6 +283,216 @@ kill "$PID" 2>/dev/null || true
 wait "$PID" 2>/dev/null || true
 PID=""
 echo ""
+
+# --- Phase 4c: Binary E2E (rate limiting) ---
+# The smoke phases above run with a pinned, generous budget so they assert
+# other behaviour. This phase drives the real limiter: two requests pass, the
+# third gets 429 with Retry-After, and health probes stay exempt.
+echo "--- Phase 4c: Binary E2E (rate limiting) ---"
+
+rm -f "$BINARY_LOG" "$COOKIE_JAR"
+
+PROXY_DISCORD_CLIENT_ID="000000000000000000" \
+PROXY_DISCORD_AUTO_RECONNECT="false" \
+PROXY_SERVER_HOST="127.0.0.1" \
+PROXY_SERVER_PORT="$PORT" \
+PROXY_SERVER_WS_PATH="/ws" \
+PROXY_SERVER_RATE_LIMIT_PER_IP="2" \
+PROXY_SERVER_RATE_LIMIT_WINDOW="30s" \
+PROXY_AUTH_ENABLED="false" \
+PROXY_MDNS_ENABLED="false" \
+PROXY_LOGGING_LEVEL="error" \
+PROXY_LOGGING_FORMAT="console" \
+    "$BINARY" >"$BINARY_LOG" 2>&1 &
+PID=$!
+
+if wait_for_ready "rate-limited server"; then
+    pass "Rate-limited server became ready on port ${PORT}"
+
+    for i in 1 2; do
+        CODE=$(http_code "$BASE/api/presence")
+        if [[ "$CODE" == "200" ]]; then
+            pass "/api/presence within the budget returns 200 (request ${i})"
+        else
+            fail "/api/presence within the budget returned ${CODE}, want 200"
+        fi
+    done
+
+    HEADERS=$(curl -s -D - -o /dev/null --max-time 5 "$BASE/api/presence" || true)
+    if echo "$HEADERS" | grep -q "^HTTP/.* 429"; then
+        pass "/api/presence over the budget returns 429"
+    else
+        fail "/api/presence over the budget did not return 429"
+    fi
+    if echo "$HEADERS" | grep -qi "^retry-after: [0-9][0-9]*"; then
+        pass "429 carries a Retry-After in seconds"
+    else
+        fail "429 is missing a Retry-After header"
+    fi
+    if echo "$HEADERS" | grep -qi "^cache-control: no-store"; then
+        pass "429 is marked uncacheable"
+    else
+        fail "429 is missing Cache-Control: no-store"
+    fi
+
+    BODY=$(curl -s --max-time 5 "$BASE/" || true)
+    if echo "$BODY" | grep -q "rate limit exceeded"; then
+        pass "dashboard 429 answers plain text a browser can render"
+    else
+        fail "dashboard 429 body is not the plain-text rejection: ${BODY:-<no response>}"
+    fi
+
+    CODE=$(http_code "$BASE/health")
+    if [[ "$CODE" == "200" ]]; then
+        pass "/health stays exempt from the rate limit"
+    else
+        fail "/health returned ${CODE} while rate limited, want 200"
+    fi
+else
+    dump_binary_log
+    fail "Rate-limited server did not become ready on port ${PORT} within ${STARTUP_TIMEOUT}s"
+    summary
+    exit 1
+fi
+
+kill "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true
+PID=""
+echo ""
+
+
+# --- Phase 4d: Binary E2E (TLS and mTLS) ---
+# cmd/proxy/main.go builds the listener, picks WithRequireClientCert from the
+# config and passes the transport mode to the mDNS advertiser; a unit test never
+# reaches that wiring. Certificate material is issued with openssl here, and the
+# phase is skipped when openssl is missing so the local workflow still works.
+echo "--- Phase 4d: Binary E2E (TLS and mTLS) ---"
+
+if ! command -v openssl >/dev/null 2>&1; then
+    echo "  SKIP: openssl is not available to issue the test certificates"
+    echo ""
+else
+    rm -rf "$TLS_DIR"
+    mkdir -p "$TLS_DIR"
+
+    # make_cert <name> <ca-prefix> <extended-key-usage> [san]
+    make_cert() {
+        local name="$1" ca="$2" usage="$3" san="${4:-}"
+        openssl req -new -newkey rsa:2048 -nodes -keyout "$TLS_DIR/$name.key" \
+            -out "$TLS_DIR/$name.csr" -subj "/CN=$name" >/dev/null 2>&1
+        {
+            echo "extendedKeyUsage=$usage"
+            if [[ -n "$san" ]]; then echo "subjectAltName=$san"; fi
+        } > "$TLS_DIR/$name.ext"
+        openssl x509 -req -in "$TLS_DIR/$name.csr" -CA "$ca.crt" -CAkey "$ca.key" \
+            -CAcreateserial -out "$TLS_DIR/$name.crt" -days 1 \
+            -extfile "$TLS_DIR/$name.ext" >/dev/null 2>&1
+    }
+
+    if openssl req -x509 -newkey rsa:2048 -nodes -keyout "$TLS_DIR/ca.key" \
+            -out "$TLS_DIR/ca.crt" -days 1 -subj "/CN=e2e-ca" >/dev/null 2>&1 &&
+        make_cert server "$TLS_DIR/ca" serverAuth "IP:127.0.0.1,DNS:localhost" &&
+        make_cert client "$TLS_DIR/ca" clientAuth; then
+        pass "Issued the TLS test material"
+
+        # --- server-side TLS ---
+        rm -f "$BINARY_LOG"
+        PROXY_DISCORD_CLIENT_ID="000000000000000000" \
+        PROXY_DISCORD_AUTO_RECONNECT="false" \
+        PROXY_SERVER_HOST="127.0.0.1" \
+        PROXY_SERVER_PORT="$PORT" \
+        PROXY_SERVER_WS_PATH="/ws" \
+        PROXY_SERVER_RATE_LIMIT_PER_IP="1000" \
+        PROXY_SERVER_TLS_ENABLED="true" \
+        PROXY_SERVER_TLS_CERT_FILE="$TLS_DIR/server.crt" \
+        PROXY_SERVER_TLS_KEY_FILE="$TLS_DIR/server.key" \
+        PROXY_AUTH_ENABLED="false" \
+        PROXY_MDNS_ENABLED="false" \
+        PROXY_LOGGING_LEVEL="info" \
+        PROXY_LOGGING_FORMAT="console" \
+            "$BINARY" >"$BINARY_LOG" 2>&1 &
+        PID=$!
+
+        BASE="https://127.0.0.1:${PORT}"
+        CURL_TLS_ARGS="--cacert ${TLS_DIR}/ca.crt"
+
+        if wait_for_ready "TLS server"; then
+            pass "TLS server answers /health over https with the CA"
+
+            CODE=$(http_code "http://127.0.0.1:${PORT}/health")
+            if [[ "$CODE" != "200" ]]; then
+                pass "TLS listener does not serve plaintext (http answer ${CODE})"
+            else
+                fail "TLS listener answered a plaintext /health with 200"
+            fi
+
+            if grep -Eq '"tls": *"server"' "$BINARY_LOG"; then
+                pass "startup logs the TLS transport mode (tls=server)"
+            else
+                fail "startup log does not report tls=server"
+            fi
+        else
+            dump_binary_log
+            fail "TLS server did not become ready on port ${PORT} within ${STARTUP_TIMEOUT}s"
+        fi
+
+        kill "$PID" 2>/dev/null || true
+        wait "$PID" 2>/dev/null || true
+        PID=""
+        rm -f "$BINARY_LOG"
+
+        # --- mutual TLS ---
+        PROXY_DISCORD_CLIENT_ID="000000000000000000" \
+        PROXY_DISCORD_AUTO_RECONNECT="false" \
+        PROXY_SERVER_HOST="127.0.0.1" \
+        PROXY_SERVER_PORT="$PORT" \
+        PROXY_SERVER_WS_PATH="/ws" \
+        PROXY_SERVER_RATE_LIMIT_PER_IP="1000" \
+        PROXY_SERVER_TLS_ENABLED="true" \
+        PROXY_SERVER_TLS_CERT_FILE="$TLS_DIR/server.crt" \
+        PROXY_SERVER_TLS_KEY_FILE="$TLS_DIR/server.key" \
+        PROXY_SERVER_TLS_CLIENT_CA_FILE="$TLS_DIR/ca.crt" \
+        PROXY_AUTH_ENABLED="false" \
+        PROXY_MDNS_ENABLED="false" \
+        PROXY_LOGGING_LEVEL="info" \
+        PROXY_LOGGING_FORMAT="console" \
+            "$BINARY" >"$BINARY_LOG" 2>&1 &
+        PID=$!
+
+        CURL_TLS_ARGS="--cacert ${TLS_DIR}/ca.crt --cert ${TLS_DIR}/client.crt --key ${TLS_DIR}/client.key"
+
+        if wait_for_ready "mTLS server"; then
+            pass "mTLS server answers /health with a client certificate"
+
+            if curl -sf --max-time 5 --cacert "$TLS_DIR/ca.crt" \
+                    "$BASE/health" >/dev/null 2>&1; then
+                fail "mTLS listener served /health without a client certificate"
+            else
+                pass "mTLS listener rejects a client without a certificate"
+            fi
+
+            if grep -Eq '"tls": *"mtls"' "$BINARY_LOG"; then
+                pass "startup logs the mTLS transport mode (tls=mtls)"
+            else
+                fail "startup log does not report tls=mtls"
+            fi
+        else
+            dump_binary_log
+            fail "mTLS server did not become ready on port ${PORT} within ${STARTUP_TIMEOUT}s"
+        fi
+
+        kill "$PID" 2>/dev/null || true
+        wait "$PID" 2>/dev/null || true
+        PID=""
+    else
+        fail "Could not issue the TLS test material with openssl"
+    fi
+
+    BASE="http://127.0.0.1:${PORT}"
+    CURL_TLS_ARGS=""
+    rm -rf "$TLS_DIR"
+    echo ""
+fi
 
 # --- Phase 5: Full race-condition test ---
 if [[ "$SKIP_UNIT" == "1" ]]; then

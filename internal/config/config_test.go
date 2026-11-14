@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/x509"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,8 @@ import (
 
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
+
+	"github.com/discord-proxy-rpc/discord-proxy-rpc/internal/testcert"
 )
 
 func TestDefaults(t *testing.T) {
@@ -53,11 +57,21 @@ func TestDefaults(t *testing.T) {
 	if cfg.Server.MaxWSConnections != 100 {
 		t.Errorf("server.max_ws_connections = %d, want 100", cfg.Server.MaxWSConnections)
 	}
-	if cfg.Server.RateLimitPerIP != 10 {
-		t.Errorf("server.rate_limit_per_ip = %d, want 10", cfg.Server.RateLimitPerIP)
+	if cfg.Server.RateLimitPerIP != DefaultRateLimitPerIP {
+		t.Errorf("server.rate_limit_per_ip = %d, want %d", cfg.Server.RateLimitPerIP, DefaultRateLimitPerIP)
 	}
 	if cfg.Server.RateLimitWindow != time.Minute {
 		t.Errorf("server.rate_limit_window = %v, want 1m", cfg.Server.RateLimitWindow)
+	}
+	if len(cfg.Server.TrustedProxies) != 0 {
+		t.Errorf("server.trusted_proxies = %v, want empty (RemoteAddr only)", cfg.Server.TrustedProxies)
+	}
+	if cfg.Server.TLS.Enabled {
+		t.Error("server.tls.enabled = true, want false")
+	}
+	if cfg.Server.TLS.CertFile != "" || cfg.Server.TLS.KeyFile != "" || cfg.Server.TLS.ClientCAFile != "" {
+		t.Errorf("server.tls files = %q/%q/%q, want empty",
+			cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile, cfg.Server.TLS.ClientCAFile)
 	}
 
 	if cfg.Auth.Enabled {
@@ -128,6 +142,17 @@ auth:
 	}
 }
 
+func TestDefaultRateLimitCoversDashboardReload(t *testing.T) {
+	// One dashboard load costs index.html, style.css, app.js and the WebSocket
+	// upgrade. The shipped budget must leave room for reloads and reconnect
+	// attempts instead of letting the primary UI trip its own limiter.
+	const perLoad = 4
+	if reloads := DefaultRateLimitPerIP / perLoad; reloads < 3 {
+		t.Errorf("DefaultRateLimitPerIP = %d: only %d dashboard loads fit in one window, want at least 3",
+			DefaultRateLimitPerIP, reloads)
+	}
+}
+
 func TestEnvVarOverrides(t *testing.T) {
 	envVars := map[string]string{
 		"PROXY_DISCORD_CLIENT_ID":         "env-client-id",
@@ -141,6 +166,7 @@ func TestEnvVarOverrides(t *testing.T) {
 		"PROXY_SERVER_MAX_WS_CONNECTIONS": "50",
 		"PROXY_SERVER_RATE_LIMIT_PER_IP":  "20",
 		"PROXY_SERVER_RATE_LIMIT_WINDOW":  "30s",
+		"PROXY_SERVER_TRUSTED_PROXIES":    "10.0.0.0/8,192.168.0.0/24",
 	}
 
 	for k, v := range envVars {
@@ -187,6 +213,15 @@ func TestEnvVarOverrides(t *testing.T) {
 	}
 	if cfg.Server.RateLimitWindow != 30*time.Second {
 		t.Errorf("server.rate_limit_window = %v, want 30s", cfg.Server.RateLimitWindow)
+	}
+	wantProxies := []string{"10.0.0.0/8", "192.168.0.0/24"}
+	if len(cfg.Server.TrustedProxies) != len(wantProxies) {
+		t.Fatalf("server.trusted_proxies = %v, want %v", cfg.Server.TrustedProxies, wantProxies)
+	}
+	for i, want := range wantProxies {
+		if cfg.Server.TrustedProxies[i] != want {
+			t.Errorf("server.trusted_proxies[%d] = %q, want %q", i, cfg.Server.TrustedProxies[i], want)
+		}
 	}
 }
 
@@ -315,6 +350,288 @@ func TestValidateNonNumericClientID(t *testing.T) {
 	}
 }
 
+func TestValidateTrustedProxies(t *testing.T) {
+	tests := []struct {
+		name    string
+		proxies []string
+		wantErr bool
+	}{
+		{"empty", nil, false},
+		{"valid CIDRs", []string{"10.0.0.0/8", " 192.168.0.0/24 "}, false},
+		{"valid IPv6 CIDR", []string{"fd00::/8"}, false},
+		{"plain IP", []string{"10.0.0.1"}, true},
+		{"garbage", []string{"not-a-cidr"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{}
+			cfg.Discord.ClientID = "123456789012345678"
+			cfg.Server.TrustedProxies = tt.proxies
+
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Validate(): want error, got nil")
+				}
+				if !strings.Contains(err.Error(), "server.trusted_proxies") {
+					t.Errorf("error %q does not name server.trusted_proxies", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate(): %v", err)
+			}
+			for i, entry := range cfg.Server.TrustedProxies {
+				if strings.TrimSpace(entry) != entry {
+					t.Errorf("trusted_proxies[%d] = %q, want trimmed", i, entry)
+				}
+			}
+		})
+	}
+}
+
+func TestConfigFileTLS(t *testing.T) {
+	dir := t.TempDir()
+	writeConfigFile(t, dir, `
+server:
+  tls:
+    enabled: true
+    cert_file: "/etc/proxy/tls.crt"
+    key_file: "/etc/proxy/tls.key"
+    client_ca_file: "/etc/proxy/clients-ca.crt"
+`)
+
+	v := newViperWithDefaults(t)
+	v.AddConfigPath(dir)
+
+	if err := v.ReadInConfig(); err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+
+	var cfg Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if !cfg.Server.TLS.Enabled {
+		t.Error("server.tls.enabled = false, want true")
+	}
+	if cfg.Server.TLS.CertFile != "/etc/proxy/tls.crt" {
+		t.Errorf("server.tls.cert_file = %q", cfg.Server.TLS.CertFile)
+	}
+	if cfg.Server.TLS.KeyFile != "/etc/proxy/tls.key" {
+		t.Errorf("server.tls.key_file = %q", cfg.Server.TLS.KeyFile)
+	}
+	if cfg.Server.TLS.ClientCAFile != "/etc/proxy/clients-ca.crt" {
+		t.Errorf("server.tls.client_ca_file = %q", cfg.Server.TLS.ClientCAFile)
+	}
+}
+
+func TestTLSEnvVarOverrides(t *testing.T) {
+	t.Setenv("PROXY_SERVER_TLS_ENABLED", "true")
+	t.Setenv("PROXY_SERVER_TLS_CERT_FILE", "/etc/proxy/tls.crt")
+	t.Setenv("PROXY_SERVER_TLS_KEY_FILE", "/etc/proxy/tls.key")
+	t.Setenv("PROXY_SERVER_TLS_CLIENT_CA_FILE", "/etc/proxy/clients-ca.crt")
+
+	v := newViperWithDefaults(t)
+	setupEnv(v)
+
+	var cfg Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if !cfg.Server.TLS.Enabled {
+		t.Error("server.tls.enabled = false, want true")
+	}
+	if cfg.Server.TLS.CertFile != "/etc/proxy/tls.crt" {
+		t.Errorf("server.tls.cert_file = %q", cfg.Server.TLS.CertFile)
+	}
+	if cfg.Server.TLS.KeyFile != "/etc/proxy/tls.key" {
+		t.Errorf("server.tls.key_file = %q", cfg.Server.TLS.KeyFile)
+	}
+	if cfg.Server.TLS.ClientCAFile != "/etc/proxy/clients-ca.crt" {
+		t.Errorf("server.tls.client_ca_file = %q", cfg.Server.TLS.ClientCAFile)
+	}
+}
+
+func TestTLSMode(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  TLSConfig
+		want string
+	}{
+		{"disabled", TLSConfig{}, TLSModeOff},
+		{"server only", TLSConfig{Enabled: true}, TLSModeServer},
+		{"mtls", TLSConfig{Enabled: true, ClientCAFile: "/ca.pem"}, TLSModeMTLS},
+		{"client ca without enabled", TLSConfig{ClientCAFile: "/ca.pem"}, TLSModeOff},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.Mode(); got != tc.want {
+				t.Errorf("Mode() = %q, want %q", got, tc.want)
+			}
+			if got, want := tc.cfg.MTLSEnabled(), tc.want == TLSModeMTLS; got != want {
+				t.Errorf("MTLSEnabled() = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestValidateTLS(t *testing.T) {
+	material := newTLSMaterial(t)
+	missingDir := t.TempDir()
+
+	validServerTLS := TLSConfig{
+		Enabled:  true,
+		CertFile: material.certFile,
+		KeyFile:  material.keyFile,
+	}
+	validMTLS := validServerTLS
+	validMTLS.ClientCAFile = material.caFile
+
+	cases := []struct {
+		name    string
+		tls     TLSConfig
+		auth    AuthConfig
+		wantErr string
+	}{
+		{name: "disabled", wantErr: ""},
+		{name: "server only", tls: validServerTLS, wantErr: ""},
+		{name: "server only with bearer auth", tls: validServerTLS, auth: AuthConfig{Enabled: true, Token: "secret"}, wantErr: ""},
+		{name: "mtls", tls: validMTLS, wantErr: ""},
+		{
+			name:    "mtls with bearer auth is ambiguous",
+			tls:     validMTLS,
+			auth:    AuthConfig{Enabled: true, Token: "secret"},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name:    "enabled without cert",
+			tls:     TLSConfig{Enabled: true, KeyFile: material.keyFile},
+			wantErr: "server.tls.cert_file",
+		},
+		{
+			name:    "enabled without key",
+			tls:     TLSConfig{Enabled: true, CertFile: material.certFile},
+			wantErr: "server.tls.key_file",
+		},
+		{
+			name:    "missing cert file",
+			tls:     TLSConfig{Enabled: true, CertFile: filepath.Join(missingDir, "absent.crt"), KeyFile: material.keyFile},
+			wantErr: "absent.crt",
+		},
+		{
+			name:    "missing key file",
+			tls:     TLSConfig{Enabled: true, CertFile: material.certFile, KeyFile: filepath.Join(missingDir, "absent.key")},
+			wantErr: "absent.key",
+		},
+		{
+			name: "invalid cert pem",
+			tls: TLSConfig{
+				Enabled:  true,
+				CertFile: writeFile(t, missingDir, "garbage.crt", "not a certificate"),
+				KeyFile:  material.keyFile,
+			},
+			wantErr: "garbage.crt",
+		},
+		{
+			name: "mismatched key",
+			tls: TLSConfig{
+				Enabled:  true,
+				CertFile: material.certFile,
+				KeyFile:  material.otherKeyFile,
+			},
+			wantErr: "server.tls: loading certificate pair",
+		},
+		{
+			name: "missing client ca file",
+			tls: TLSConfig{
+				Enabled:      true,
+				CertFile:     material.certFile,
+				KeyFile:      material.keyFile,
+				ClientCAFile: filepath.Join(missingDir, "absent-ca.crt"),
+			},
+			wantErr: "absent-ca.crt",
+		},
+		{
+			name: "invalid client ca pem",
+			tls: TLSConfig{
+				Enabled:      true,
+				CertFile:     material.certFile,
+				KeyFile:      material.keyFile,
+				ClientCAFile: writeFile(t, missingDir, "garbage-ca.crt", "not a CA"),
+			},
+			wantErr: "no valid PEM certificates",
+		},
+		{
+			name:    "certificate files while disabled",
+			tls:     TLSConfig{CertFile: material.certFile, KeyFile: material.keyFile},
+			wantErr: "server.tls.enabled",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Server: ServerConfig{TLS: tc.tls}, Auth: tc.auth}
+			cfg.Discord.ClientID = "123456789012345678"
+
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Validate() = nil, want error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error %q does not contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadConfigAcceptsMTLS(t *testing.T) {
+	material := newTLSMaterial(t)
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PROXY_DISCORD_CLIENT_ID", "123456789012345678")
+	t.Setenv("PROXY_SERVER_TLS_ENABLED", "true")
+	t.Setenv("PROXY_SERVER_TLS_CERT_FILE", material.certFile)
+	t.Setenv("PROXY_SERVER_TLS_KEY_FILE", material.keyFile)
+	t.Setenv("PROXY_SERVER_TLS_CLIENT_CA_FILE", material.caFile)
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() with mTLS env: %v", err)
+	}
+	if !cfg.Server.TLS.MTLSEnabled() {
+		t.Errorf("server.tls = %+v, want mTLS enabled", cfg.Server.TLS)
+	}
+}
+
+func TestLoadConfigRejectsMTLSWithBearerAuth(t *testing.T) {
+	material := newTLSMaterial(t)
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PROXY_DISCORD_CLIENT_ID", "123456789012345678")
+	t.Setenv("PROXY_SERVER_TLS_ENABLED", "true")
+	t.Setenv("PROXY_SERVER_TLS_CERT_FILE", material.certFile)
+	t.Setenv("PROXY_SERVER_TLS_KEY_FILE", material.keyFile)
+	t.Setenv("PROXY_SERVER_TLS_CLIENT_CA_FILE", material.caFile)
+	t.Setenv("PROXY_AUTH_ENABLED", "true")
+	t.Setenv("PROXY_AUTH_TOKEN", "secret")
+
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("LoadConfig() with mTLS + bearer auth: want error, got nil")
+	} else if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error %q does not explain the conflict", err)
+	}
+}
+
 func TestLoadConfigRejectsMissingClientID(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PROXY_DISCORD_CLIENT_ID", "")
@@ -379,5 +696,110 @@ func writeConfigFile(t *testing.T, dir, content string) {
 	path := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
+	}
+}
+
+func writeFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	return path
+}
+
+type tlsMaterial struct {
+	caFile       string
+	certFile     string
+	keyFile      string
+	otherKeyFile string
+}
+
+// newTLSMaterial writes a CA, a server certificate for 127.0.0.1 signed by it
+// and a second, unrelated key, so the validation cases can exercise a real
+// certificate/CA pair and a mismatched key.
+func newTLSMaterial(t *testing.T) tlsMaterial {
+	t.Helper()
+
+	dir := t.TempDir()
+	ca, err := testcert.NewAuthority("test-ca")
+	if err != nil {
+		t.Fatalf("new CA: %v", err)
+	}
+	certPEM, keyPEM, err := ca.Issue("localhost",
+		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		[]string{"localhost"}, []net.IP{net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("issue server certificate: %v", err)
+	}
+	certFile, keyFile, err := testcert.WritePair(dir, "server", certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("write server pair: %v", err)
+	}
+
+	otherCA, err := testcert.NewAuthority("other-ca")
+	if err != nil {
+		t.Fatalf("new other CA: %v", err)
+	}
+	otherCertPEM, otherKeyPEM, err := otherCA.Issue("other",
+		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		[]string{"localhost"}, []net.IP{net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("issue other certificate: %v", err)
+	}
+	_, otherKeyFile, err := testcert.WritePair(dir, "other", otherCertPEM, otherKeyPEM)
+	if err != nil {
+		t.Fatalf("write other pair: %v", err)
+	}
+
+	return tlsMaterial{
+		caFile:       writeFile(t, dir, "ca.crt", string(ca.CertPEM())),
+		certFile:     certFile,
+		keyFile:      keyFile,
+		otherKeyFile: otherKeyFile,
+	}
+}
+
+// TestTLSShortEnvNamesIgnored pins the env surface to the PROXY_SERVER_* naming
+// every other server.* key follows. PROXY_TLS_ENABLED used to be an undocumented
+// second name for server.tls.enabled: viper's automatic-env lookup already
+// derives PROXY_SERVER_TLS_ENABLED, so both names resolved and the shortcut won
+// when they disagreed. Only the conventional name is bound now.
+func TestTLSShortEnvNamesIgnored(t *testing.T) {
+	material := newTLSMaterial(t)
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PROXY_DISCORD_CLIENT_ID", "123456789012345678")
+	t.Setenv("PROXY_TLS_ENABLED", "true")
+	t.Setenv("PROXY_TLS_CERT_FILE", material.certFile)
+	t.Setenv("PROXY_TLS_KEY_FILE", material.keyFile)
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig(): %v", err)
+	}
+	if cfg.Server.TLS.Enabled {
+		t.Error("server.tls.enabled = true from PROXY_TLS_ENABLED, want the short name ignored")
+	}
+}
+
+// TestTLSConventionalEnvNameWins checks that the bound name is the one that
+// decides when a legacy short name is set to the opposite value.
+func TestTLSConventionalEnvNameWins(t *testing.T) {
+	material := newTLSMaterial(t)
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PROXY_DISCORD_CLIENT_ID", "123456789012345678")
+	t.Setenv("PROXY_TLS_ENABLED", "false")
+	t.Setenv("PROXY_SERVER_TLS_ENABLED", "true")
+	t.Setenv("PROXY_SERVER_TLS_CERT_FILE", material.certFile)
+	t.Setenv("PROXY_SERVER_TLS_KEY_FILE", material.keyFile)
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig(): %v", err)
+	}
+	if !cfg.Server.TLS.Enabled {
+		t.Error("server.tls.enabled = false despite PROXY_SERVER_TLS_ENABLED=true")
 	}
 }

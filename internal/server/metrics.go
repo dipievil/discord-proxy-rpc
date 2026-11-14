@@ -60,7 +60,7 @@ func NewMetrics(hub *Hub, getIPCState func() string, rl *RateLimiter) *Metrics {
 		prometheus.NewCounterFunc(prometheus.CounterOpts{
 			Namespace: metricsNamespace,
 			Name:      "rate_limit_rejections_total",
-			Help:      "Number of WebSocket upgrade requests rejected by the rate limiter.",
+			Help:      "Number of requests rejected by the per-IP rate limiter, across the dashboard, REST and WebSocket upgrade routes.",
 		}, rejections),
 		m.presenceSends,
 	)

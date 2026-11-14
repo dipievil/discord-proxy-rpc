@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os/signal"
 	"syscall"
@@ -75,10 +76,14 @@ func main() {
 		server.WithGetIPCState(func() string { return client.State().String() }),
 		server.WithWSPath(cfg.Server.WsPath),
 		server.WithRateLimiter(rateLimiter),
+		server.WithTrustedProxies(cfg.Server.TrustedProxies),
 		server.WithConnectionTracker(server.NewConnectionTracker(cfg.Server.MaxWSConnections)),
 	}
 	if cfg.Auth.Enabled {
 		opts = append(opts, server.WithAuth(server.BearerAuthFunc(cfg.Auth, logger)))
+	}
+	if cfg.Server.TLS.MTLSEnabled() {
+		opts = append(opts, server.WithRequireClientCert())
 	}
 	if metrics != nil {
 		opts = append(opts, server.WithMetrics(metrics))
@@ -95,23 +100,45 @@ func main() {
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}
 
-	go runIPCEventLoop(ctx, client, presence, hub, logger)
-	go client.RunWithReconnect(ctx, cfg.Discord)
+	// ipcDone is closed once the IPC client gives up, i.e. when no further
+	// session will be attempted; the event loop turns that into one terminal
+	// disconnected state for WebSocket clients.
+	ipcDone := make(chan struct{})
+	go runIPCEventLoop(ctx, client, presence, hub, ipcDone, logger)
+	go func() {
+		defer close(ipcDone)
+		if err := client.RunWithReconnect(ctx, cfg.Discord); err != nil && ctx.Err() == nil {
+			logger.Warn("IPC client stopped", zap.Error(err))
+		}
+	}()
+
+	tlsCfg, err := server.NewTLSConfig(cfg.Server.TLS)
+	if err != nil {
+		logger.Fatal("configuring TLS", zap.Error(err))
+	}
 
 	if cfg.Mdns.Enabled {
 		adv, err := mdns.NewAdvertiser(cfg.Mdns, cfg.Server.Port, logger)
 		if err != nil {
 			logger.Fatal("creating mDNS advertiser", zap.Error(err))
 		}
-		if err := adv.Advertise(); err != nil {
+		if err := adv.WithTLSMode(cfg.Server.TLS.Mode()).Advertise(); err != nil {
 			logger.Fatal("advertising mDNS service", zap.Error(err))
 		}
 		defer adv.Shutdown()
 	}
 
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		logger.Fatal("creating listener", zap.String("addr", srv.Addr), zap.Error(err))
+	}
+
 	go func() {
-		logger.Info("HTTP server starting", zap.String("addr", srv.Addr))
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Info("HTTP server starting",
+			zap.String("addr", srv.Addr),
+			zap.String("tls", cfg.Server.TLS.Mode()),
+		)
+		if err := server.Serve(srv, ln, tlsCfg); err != nil && err != http.ErrServerClosed {
 			logger.Fatal("HTTP server failed", zap.Error(err))
 		}
 	}()
@@ -130,12 +157,31 @@ func main() {
 	client.Close()
 }
 
-func runIPCEventLoop(ctx context.Context, client *ipc.Client, presence *state.Presence, hub *server.Hub, logger *zap.Logger) {
+// ipcEventSource is the part of the IPC client the event loop depends on, so
+// the loop can be driven by a test without a live Discord socket.
+type ipcEventSource interface {
+	Events() <-chan ipc.Event
+}
+
+// runIPCEventLoop mirrors IPC session events into the presence state machine and
+// the WebSocket hub. A session end is announced as reconnecting; when ipcDone
+// reports that no further session will be attempted, the loop broadcasts one
+// terminal disconnected instead and returns.
+func runIPCEventLoop(ctx context.Context, source ipcEventSource, presence *state.Presence, hub *server.Hub, ipcDone <-chan struct{}, logger *zap.Logger) {
 	for {
-		events := client.Events()
+		events := source.Events()
 		if events == nil {
 			select {
 			case <-ctx.Done():
+				return
+			case <-ipcDone:
+				if ctx.Err() != nil {
+					return
+				}
+				logger.Info("IPC session ended and will not reconnect")
+				if !hub.BroadcastWait(ctx, server.NewStateMessage(server.StateDisconnected)) {
+					logger.Error("terminal disconnected state was not delivered")
+				}
 				return
 			case <-time.After(500 * time.Millisecond):
 			}
