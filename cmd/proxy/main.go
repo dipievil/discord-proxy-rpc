@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -20,7 +21,28 @@ import (
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/pkg/types"
 )
 
+// Set at build time with -ldflags "-X main.version=... -X main.commit=... -X main.date=...".
+// goreleaser and the Makefile stamp all three; an unstamped build reports "dev".
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
+// versionString is the single line printed by -version and logged at startup.
+func versionString() string {
+	return fmt.Sprintf("discord-proxy %s (commit %s, built %s)", version, commit, date)
+}
+
 func main() {
+	showVersion := flag.Bool("version", false, "print the proxy version and exit")
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(versionString())
+		return
+	}
+
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		log.Fatalf("loading config: %v", err)
@@ -31,6 +53,12 @@ func main() {
 		log.Fatalf("setting up logger: %v", err)
 	}
 	defer logger.Sync()
+
+	logger.Info("discord-proxy-rpc starting",
+		zap.String("version", version),
+		zap.String("commit", commit),
+		zap.String("built", date),
+	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

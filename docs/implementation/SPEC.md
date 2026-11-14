@@ -281,7 +281,7 @@ go run ./cmd/discover -timeout 5s -json  # {"count":N,"proxies":[...]}
 ### 5. Config (`internal/config/`)
 
 - **Library**: `github.com/spf13/viper`
-- Sources (priority): flags > env > YAML > defaults
+- Sources (priority): env > YAML > defaults (the binary has no config flags; `-version` only prints the build stamp and exits)
 - Config file: `config.yaml` (search: `.`, `/etc/discord-proxy-rpc/`, `$HOME/.config/discord-proxy-rpc/`)
 
 ```yaml
@@ -471,6 +471,10 @@ make build-all
 make tray
 ```
 
+- Version stamping: `cmd/proxy` carries `version`, `commit` and `date` variables set with `-X` ldflags. The Makefile derives them from `git describe --tags --always --dirty`, `git rev-parse --short HEAD` and the build time, so a local build reports the tag it came from; goreleaser stamps the release version, commit and date.
+- `discord-proxy -version` prints one line — `discord-proxy <version> (commit <sha>, built <timestamp>)` — and exits 0 without loading configuration. An unstamped build (`go run`, plain `go build`) reports `dev`. The same stamp is logged at startup.
+- `cmd/discover` and `cmd/tray` accept `-version` and are stamped with the release version by goreleaser.
+
 ### CI (GitHub Actions — `.github/workflows/ci.yml`)
 
 - Triggers: push and PR to `dev` and `main`
@@ -486,6 +490,7 @@ make tray
 - Outputs: one `.zip` per target — Linux (amd64, arm64), Windows (amd64), macOS (amd64, arm64); on Linux each archive also carries the tray binary (`discord-proxy-tray`)
 - Each archive carries everything a user needs: the proxy binaries (`discord-proxy` and `discover`), the tray on Linux, `config.example.yaml`, `LICENSE` and `README.md`
 - `checksums.txt` (SHA-256 of every archive) is attached to the release
+- The `dev` → `main` merge decides whether a release happens: its squash title (or a `Release-As:` footer) must be a bumping type (`feat:`, `fix:`, `feat!:`) — a `chore:` merge leaves semantic-release with no bump, so the tag and release are never created
 
 ### Docker
 
