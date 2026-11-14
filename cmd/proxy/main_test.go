@@ -237,3 +237,26 @@ func TestRunIPCEventLoopCancelledDoesNotEmitTerminalState(t *testing.T) {
 		t.Fatal("received a terminal state frame after cancellation")
 	}
 }
+
+func TestVersionString(t *testing.T) {
+	origVersion, origCommit, origDate := version, commit, date
+	t.Cleanup(func() { version, commit, date = origVersion, origCommit, origDate })
+
+	version, commit, date = "v2.1.0", "abc1234", "2026-11-14T12:00:00Z"
+	want := "discord-proxy v2.1.0 (commit abc1234, built 2026-11-14T12:00:00Z)"
+	if got := versionString(); got != want {
+		t.Fatalf("versionString() = %q, want %q", got, want)
+	}
+}
+
+// An unstamped build (go run, plain go build) must still say something honest.
+func TestVersionStringDefaults(t *testing.T) {
+	origVersion, origCommit, origDate := version, commit, date
+	t.Cleanup(func() { version, commit, date = origVersion, origCommit, origDate })
+
+	version, commit, date = "dev", "unknown", "unknown"
+	want := "discord-proxy dev (commit unknown, built unknown)"
+	if got := versionString(); got != want {
+		t.Fatalf("versionString() = %q, want %q", got, want)
+	}
+}

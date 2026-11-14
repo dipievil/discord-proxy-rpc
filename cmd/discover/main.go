@@ -7,7 +7,7 @@
 //
 // Usage:
 //
-//	go run ./cmd/discover [-timeout 5s] [-json]
+//	go run ./cmd/discover [-timeout 5s] [-json] [-version]
 //
 // Exit codes: 0 on success (including "no proxies found"), 1 when browsing or
 // writing fails, 2 on a usage error such as a non-positive -timeout.
@@ -24,10 +24,19 @@ import (
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/internal/mdns"
 )
 
+// Set at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	timeout := flag.Duration("timeout", 5*time.Second, "how long to browse mDNS before giving up")
 	asJSON := flag.Bool("json", false, "emit machine-readable JSON instead of a table")
+	showVersion := flag.Bool("version", false, "print the discover version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("discover " + version)
+		return
+	}
 
 	if *timeout <= 0 {
 		fmt.Fprintln(os.Stderr, "error: -timeout must be positive")

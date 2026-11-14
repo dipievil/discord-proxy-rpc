@@ -5,11 +5,22 @@ BINARY_NAME := discord-proxy
 BIN_DIR     := bin
 MODULE      := github.com/discord-proxy-rpc/discord-proxy-rpc
 
+# Version stamping: goreleaser sets these at release time; local builds get the
+# closest tag (or commit) so `discord-proxy -version` is never a lie.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS        := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+TRAY_LDFLAGS   := -X main.version=$(VERSION)
+PROXY_LDFLAGS  := -s -w $(LDFLAGS)
+PROXY_BUILD    := go build -trimpath -ldflags "$(PROXY_LDFLAGS)"
+TRAY_BUILD     := go build -trimpath -ldflags "$(TRAY_LDFLAGS)"
+
 .PHONY: build build-linux build-windows build-all tui tray test lint run dev release clean e2e capture discover
 
 ## build: Build for current platform
 build:
-	go build -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/proxy
+	$(PROXY_BUILD) -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/proxy
 
 ## tui: Build the terminal dashboard (TUI consumer) for the current platform
 tui:
@@ -17,23 +28,23 @@ tui:
 
 ## tray: Build the system-tray indicator (Linux StatusNotifierItem)
 tray:
-	go build -o $(BIN_DIR)/$(BINARY_NAME)-tray ./cmd/tray
+	$(TRAY_BUILD) -o $(BIN_DIR)/$(BINARY_NAME)-tray ./cmd/tray
 
 ## build-linux: Build for Linux amd64
 build-linux:
-	GOOS=linux GOARCH=amd64 go build -o $(BIN_DIR)/$(BINARY_NAME)-linux-amd64 ./cmd/proxy
+	GOOS=linux GOARCH=amd64 $(PROXY_BUILD) -o $(BIN_DIR)/$(BINARY_NAME)-linux-amd64 ./cmd/proxy
 
 ## build-windows: Build for Windows amd64
 build-windows:
-	GOOS=windows GOARCH=amd64 go build -o $(BIN_DIR)/$(BINARY_NAME)-windows-amd64.exe ./cmd/proxy
+	GOOS=windows GOARCH=amd64 $(PROXY_BUILD) -o $(BIN_DIR)/$(BINARY_NAME)-windows-amd64.exe ./cmd/proxy
 
 ## build-all: Build for all supported platforms
 build-all:
-	GOOS=linux GOARCH=amd64 go build -o $(BIN_DIR)/$(BINARY_NAME)-linux-amd64 ./cmd/proxy
-	GOOS=linux GOARCH=arm64 go build -o $(BIN_DIR)/$(BINARY_NAME)-linux-arm64 ./cmd/proxy
-	GOOS=windows GOARCH=amd64 go build -o $(BIN_DIR)/$(BINARY_NAME)-windows-amd64.exe ./cmd/proxy
-	GOOS=darwin GOARCH=amd64 go build -o $(BIN_DIR)/$(BINARY_NAME)-darwin-amd64 ./cmd/proxy
-	GOOS=darwin GOARCH=arm64 go build -o $(BIN_DIR)/$(BINARY_NAME)-darwin-arm64 ./cmd/proxy
+	GOOS=linux GOARCH=amd64 $(PROXY_BUILD) -o $(BIN_DIR)/$(BINARY_NAME)-linux-amd64 ./cmd/proxy
+	GOOS=linux GOARCH=arm64 $(PROXY_BUILD) -o $(BIN_DIR)/$(BINARY_NAME)-linux-arm64 ./cmd/proxy
+	GOOS=windows GOARCH=amd64 $(PROXY_BUILD) -o $(BIN_DIR)/$(BINARY_NAME)-windows-amd64.exe ./cmd/proxy
+	GOOS=darwin GOARCH=amd64 $(PROXY_BUILD) -o $(BIN_DIR)/$(BINARY_NAME)-darwin-amd64 ./cmd/proxy
+	GOOS=darwin GOARCH=arm64 $(PROXY_BUILD) -o $(BIN_DIR)/$(BINARY_NAME)-darwin-arm64 ./cmd/proxy
 
 ## test: Run all tests with race detection and coverage
 ##      Falls back to no race detector if gcc is unavailable

@@ -140,11 +140,9 @@ Link-local IPv6 addresses are shown as a count (`(+N link-local)`) because they 
 
 ## Quick Start
 
-> **Status: under development.** The core libraries (IPC client, state machine, LAN server, mDNS, dashboard) are implemented and tested, but the application startup wiring that launches the full server is not merged yet. The quick-start options below become usable once that wiring lands.
-
 ### Option 1: Download a release
 
-1. Download the latest `.zip` for your platform from [Releases](https://github.com/discord-proxy-rpc/discord-proxy-rpc/releases) and unzip it. The archive also contains `discover`, `LICENSE` and `README.md`; `checksums.txt` on the release page lists the SHA-256 of every archive.
+1. Download the latest `.zip` for your platform from [Releases](https://github.com/dipievil/discord-proxy-rpc/releases) and unzip it. The archive also contains `discover`, `LICENSE` and `README.md`; `checksums.txt` on the release page lists the SHA-256 of every archive.
 2. Copy the bundled `config.example.yaml` to `config.yaml` next to the binary, then set `discord.client_id` to your Discord Application ID (see [Configuration Reference](#configuration-reference)). Every other key already has a working default.
 3. Run the binary:
    ```bash
@@ -181,12 +179,11 @@ docker run --rm \
 
 ### Option 3: Build from source
 
-> **Status: not yet available.** The full startup wiring (IPC client + HTTP server) is still in progress; the binary built today only advertises the mDNS service and does not yet serve the dashboard or listen on port 8765. Follow this path once the startup wiring is merged.
-
 ```bash
-git clone https://github.com/discord-proxy-rpc/discord-proxy-rpc.git
+git clone https://github.com/dipievil/discord-proxy-rpc.git
 cd discord-proxy-rpc
 make build
+./bin/discord-proxy -version   # prints version, commit and build date
 ./bin/discord-proxy
 ```
 
@@ -218,10 +215,11 @@ The proxy requires a Discord Application ID to authenticate via IPC. This takes 
 
 The proxy loads configuration from (highest to lowest priority):
 
-1. CLI flags
-2. Environment variables (prefix: `PROXY_`)
-3. YAML config file (`config.yaml`)
-4. Built-in defaults
+1. Environment variables (prefix: `PROXY_`)
+2. YAML config file (`config.yaml`)
+3. Built-in defaults
+
+The only command-line flag is `-version`, which prints the version, commit and build date and exits.
 
 ### Config file search paths
 
