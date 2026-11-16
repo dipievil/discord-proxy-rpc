@@ -151,10 +151,11 @@ auth:
 }
 
 func TestDefaultRateLimitCoversDashboardReload(t *testing.T) {
-	// One dashboard load costs index.html, style.css, app.js and the WebSocket
-	// upgrade. The shipped budget must leave room for reloads and reconnect
+	// One dashboard load costs index.html, style.css, app.js, the WebSocket
+	// upgrade and the /api/accounts lookup the dashboard makes at every session
+	// start. The shipped budget must leave room for reloads and reconnect
 	// attempts instead of letting the primary UI trip its own limiter.
-	const perLoad = 4
+	const perLoad = 5
 	if reloads := DefaultRateLimitPerIP / perLoad; reloads < 3 {
 		t.Errorf("DefaultRateLimitPerIP = %d: only %d dashboard loads fit in one window, want at least 3",
 			DefaultRateLimitPerIP, reloads)

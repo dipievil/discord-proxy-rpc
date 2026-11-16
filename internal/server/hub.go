@@ -62,6 +62,9 @@ type Hub struct {
 	// snapshot describe when no account is selected. It stays empty with a
 	// single account, so those frames carry no account field.
 	PrimaryAccount string
+	// PrimaryAccountFunc, when set, supplies the current primary account so
+	// those frames follow a reconnect; it takes precedence over PrimaryAccount.
+	PrimaryAccountFunc func() string
 	// GetCurrentState supplies the snapshot a state subscription is answered
 	// with; nil disables the snapshot.
 	GetCurrentState func() ConnectionState
@@ -130,7 +133,7 @@ func (h *Hub) Run(ctx context.Context) {
 			h.mu.Lock()
 			if _, ok := h.clients[req.client.id]; ok && h.GetCurrentState != nil {
 				msg := NewStateMessage(h.GetCurrentState(), h.ClientID)
-				msg.Account = h.PrimaryAccount
+				msg.Account = h.primaryAccount()
 				data, err := json.Marshal(msg)
 				if err != nil {
 					h.logger.Error("failed to marshal state snapshot", zap.Error(fmt.Errorf("marshal state snapshot: %w", err)))
@@ -354,7 +357,17 @@ func (h *Hub) sendCurrent(c *Client, account string) {
 	if h.GetCurrentPresence == nil {
 		return
 	}
-	h.sendCurrentMessage(c, h.GetCurrentPresence(), h.PrimaryAccount)
+	h.sendCurrentMessage(c, h.GetCurrentPresence(), h.primaryAccount())
+}
+
+// primaryAccount resolves the account the primary-scoped frames describe. A
+// wired provider is consulted per frame, so a reconnect that moves the primary
+// is reflected without a restart.
+func (h *Hub) primaryAccount() string {
+	if h.PrimaryAccountFunc != nil {
+		return h.PrimaryAccountFunc()
+	}
+	return h.PrimaryAccount
 }
 
 func (h *Hub) sendCurrentMessage(c *Client, snapshot types.PresenceSnapshot, account string) {

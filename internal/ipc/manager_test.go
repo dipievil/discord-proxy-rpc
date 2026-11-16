@@ -45,8 +45,8 @@ func TestManagerSingleAccountUsesFirstSlotThatConnects(t *testing.T) {
 	if len(accounts) != 1 {
 		t.Fatalf("Accounts() = %d entries, want 1", len(accounts))
 	}
-	if accounts[0].Name != "discord-ipc-2" {
-		t.Errorf("account name = %q, want %q (identity from the connected slot)", accounts[0].Name, "discord-ipc-2")
+	if accounts[0].Name() != "discord-ipc-2" {
+		t.Errorf("account name = %q, want %q (identity from the connected slot)", accounts[0].Name(), "discord-ipc-2")
 	}
 	if got := accounts[0].Client.State(); got != StateConnected {
 		t.Errorf("account state = %v, want connected", got)
@@ -67,8 +67,8 @@ func TestManagerSingleAccountWithoutSocketKeepsFirstSlot(t *testing.T) {
 	if len(accounts) != 1 {
 		t.Fatalf("Accounts() = %d entries, want 1", len(accounts))
 	}
-	if accounts[0].Name != "discord-ipc-0" {
-		t.Errorf("account name = %q, want %q", accounts[0].Name, "discord-ipc-0")
+	if accounts[0].Name() != "discord-ipc-0" {
+		t.Errorf("account name = %q, want %q", accounts[0].Name(), "discord-ipc-0")
 	}
 	if got := accounts[0].Client.State(); got != StateDisconnected {
 		t.Errorf("account state = %v, want disconnected", got)
@@ -90,8 +90,8 @@ func TestManagerMultiAccountClaimsDistinctSlots(t *testing.T) {
 
 	wantNames := []string{"discord-ipc-0", "discord-ipc-1"}
 	for i, want := range wantNames {
-		if accounts[i].Name != want {
-			t.Errorf("account[%d] name = %q, want %q", i, accounts[i].Name, want)
+		if accounts[i].Name() != want {
+			t.Errorf("account[%d] name = %q, want %q", i, accounts[i].Name(), want)
 		}
 		if got := accounts[i].Client.State(); got != StateConnected {
 			t.Errorf("account[%d] state = %v, want connected", i, got)
@@ -129,14 +129,14 @@ func TestManagerKeepsSlotForAccountWithoutSocket(t *testing.T) {
 	if len(accounts) != 2 {
 		t.Fatalf("Accounts() = %d entries, want 2", len(accounts))
 	}
-	if accounts[0].Name != "discord-ipc-0" {
-		t.Errorf("account[0] name = %q, want %q", accounts[0].Name, "discord-ipc-0")
+	if accounts[0].Name() != "discord-ipc-0" {
+		t.Errorf("account[0] name = %q, want %q", accounts[0].Name(), "discord-ipc-0")
 	}
 	if got := accounts[0].Client.State(); got != StateConnected {
 		t.Errorf("account[0] state = %v, want connected", got)
 	}
-	if accounts[1].Name != "discord-ipc-1" {
-		t.Errorf("account[1] name = %q, want the next free slot %q", accounts[1].Name, "discord-ipc-1")
+	if accounts[1].Name() != "discord-ipc-1" {
+		t.Errorf("account[1] name = %q, want the next free slot %q", accounts[1].Name(), "discord-ipc-1")
 	}
 	if got := accounts[1].Client.State(); got != StateDisconnected {
 		t.Errorf("account[1] state = %v, want disconnected until Discord appears", got)
@@ -159,8 +159,8 @@ func TestManagerOneAccountReconnectsWhileAnotherStaysConnected(t *testing.T) {
 		t.Fatalf("Accounts() = %d entries, want 2", len(accounts))
 	}
 	secondary := accounts[1]
-	if secondary.Name != "discord-ipc-1" {
-		t.Fatalf("account[1] name = %q, want %q", secondary.Name, "discord-ipc-1")
+	if secondary.Name() != "discord-ipc-1" {
+		t.Fatalf("account[1] name = %q, want %q", secondary.Name(), "discord-ipc-1")
 	}
 	secondary.Client.timeout = 150 * time.Millisecond
 
@@ -205,9 +205,9 @@ func TestManagerWithoutSlotsTracksNoAccounts(t *testing.T) {
 	}
 }
 
-// The primary account is the lowest tracked pipe slot even when a higher slot
-// answered the handshake first, so /api/presence and /api/state keep a stable
-// meaning.
+// Accounts stay ordered by pipe slot even when a higher slot answered the
+// handshake first. The primary, however, is the lowest slot that is connected,
+// so a dead slot 0 cannot mask the live slot 1.
 func TestManagerOrdersAccountsBySlot(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "discord-ipc-0")
 	second := newMockDiscordNamed(t, "discord-ipc-1")
@@ -220,17 +220,129 @@ func TestManagerOrdersAccountsBySlot(t *testing.T) {
 	if len(accounts) != 2 {
 		t.Fatalf("Accounts() = %d entries, want 2", len(accounts))
 	}
-	if accounts[0].Name != "discord-ipc-0" {
-		t.Errorf("accounts[0] name = %q, want %q (lowest slot is primary)", accounts[0].Name, "discord-ipc-0")
+	if accounts[0].Name() != "discord-ipc-0" {
+		t.Errorf("accounts[0] name = %q, want %q (lowest tracked slot)", accounts[0].Name(), "discord-ipc-0")
 	}
-	if accounts[1].Name != "discord-ipc-1" {
-		t.Errorf("accounts[1] name = %q, want %q", accounts[1].Name, "discord-ipc-1")
+	if accounts[1].Name() != "discord-ipc-1" {
+		t.Errorf("accounts[1] name = %q, want %q", accounts[1].Name(), "discord-ipc-1")
 	}
 	if got := accounts[1].Client.State(); got != StateConnected {
 		t.Errorf("accounts[1] state = %v, want connected on the slot that answered", got)
 	}
+	if m.Primary() != accounts[1] {
+		t.Error("Primary() is not the lowest connected slot")
+	}
+}
+
+// The primary must follow the connection state, not just the slot: with the
+// lowest slot down and a higher one connected, the connected account answers
+// for the proxy instead of reporting a dead slot forever.
+func TestManagerPrimaryIsLowestConnectedSlot(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "discord-ipc-0")
+	second := newMockDiscordNamed(t, "discord-ipc-1")
+
+	m := newManager("test-client-id", 2, []string{missing, second.path}, zap.NewNop())
+	m.Connect()
+	t.Cleanup(m.Close)
+
+	accounts := m.Accounts()
+	if got := m.Primary(); got != accounts[1] {
+		t.Fatalf("Primary() = %v, want the connected slot %q", got, accounts[1].Name())
+	}
+
+	// Slot 0 appears later; the primary moves back to it as the state changes,
+	// without another Connect.
+	accounts[1].Client.timeout = 150 * time.Millisecond
+	low := newMockDiscordAt(t, missing)
+
+	cfg := config.DiscordConfig{
+		AutoReconnect:         true,
+		ReconnectBaseInterval: 20 * time.Millisecond,
+		MaxReconnectInterval:  50 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- accounts[0].Client.RunWithReconnect(ctx, cfg) }()
+
+	waitForState(t, accounts[0].Client, StateConnected, 5*time.Second)
+	if got := m.Primary(); got != accounts[0] {
+		t.Errorf("Primary() = %v, want the lowest slot %q once it connects", got, accounts[0].Name())
+	}
+	if got := accounts[0].Client.Socket(); got != low.path {
+		t.Errorf("connected socket = %q, want %q", got, low.path)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconnect loop did not stop after cancellation")
+	}
+}
+
+// When every tracked account is down the primary falls back to the lowest
+// tracked slot, so /api/state and the probes still describe a stable account.
+func TestManagerPrimaryFallsBackToLowestSlotWhenAllDisconnected(t *testing.T) {
+	first := filepath.Join(t.TempDir(), "discord-ipc-0")
+	second := filepath.Join(t.TempDir(), "discord-ipc-1")
+
+	m := newManager("test-client-id", 2, []string{first, second}, zap.NewNop())
+	m.Connect()
+	t.Cleanup(m.Close)
+
+	accounts := m.Accounts()
+	if len(accounts) != 2 {
+		t.Fatalf("Accounts() = %d entries, want 2", len(accounts))
+	}
 	if m.Primary() != accounts[0] {
-		t.Error("Primary() is not the lowest slot")
+		t.Error("Primary() is not the lowest tracked slot while every account is down")
+	}
+}
+
+// In single-account mode the client scans every slot, so the reported identity
+// follows the slot it actually connected to instead of freezing at the first
+// connect.
+func TestManagerSingleAccountNameFollowsReconnect(t *testing.T) {
+	first := newMockDiscordNamed(t, "discord-ipc-0")
+	secondPath := filepath.Join(t.TempDir(), "discord-ipc-1")
+
+	m := newManager("test-client-id", 1, []string{first.path, secondPath}, zap.NewNop())
+	m.Connect()
+	t.Cleanup(m.Close)
+
+	account := m.Accounts()[0]
+	if got := account.Name(); got != "discord-ipc-0" {
+		t.Fatalf("account name = %q, want %q", got, "discord-ipc-0")
+	}
+
+	// Discord on slot 0 goes away and the next session lands on slot 1.
+	_ = account.Client.Close()
+	first.ln.Close()
+	first.mu.Lock()
+	if first.conn != nil {
+		_ = first.conn.Close()
+	}
+	first.mu.Unlock()
+
+	newMockDiscordAt(t, secondPath)
+	if err := account.Client.Connect(); err != nil {
+		t.Fatalf("reconnecting on slot 1: %v", err)
+	}
+
+	if got := account.Name(); got != "discord-ipc-1" {
+		t.Errorf("account name = %q, want %q after the reconnect", got, "discord-ipc-1")
+	}
+	if got := account.Key(); got != "discord-ipc-0" {
+		t.Errorf("account key = %q, want the claimed slot %q", got, "discord-ipc-0")
+	}
+	if found, ok := m.Account("discord-ipc-1"); !ok || found != account {
+		t.Error("Account(discord-ipc-1) did not resolve the reconnected account")
+	}
+	if found, ok := m.Account("discord-ipc-0"); !ok || found != account {
+		t.Error("Account(discord-ipc-0) did not resolve the claimed slot")
 	}
 }
 

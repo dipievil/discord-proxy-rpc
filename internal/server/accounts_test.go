@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -317,6 +318,45 @@ func TestWSGetCurrentPrimaryAccountIsTagged(t *testing.T) {
 	}
 	if msg.Account != "discord-ipc-0" {
 		t.Errorf("account = %q, want the primary account %q", msg.Account, "discord-ipc-0")
+	}
+}
+
+// The primary account is resolved per frame, so a reconnect that moves it shows
+// up in get_current without restarting the hub.
+func TestWSGetCurrentFollowsPrimaryAccountProvider(t *testing.T) {
+	var mu sync.Mutex
+	primary := "discord-ipc-0"
+
+	hub, _, ts := newTestServer(t,
+		WithGetCurrentPresence(func() types.PresenceSnapshot {
+			snapshot, _ := testAccountPresence("discord-ipc-0")
+			return snapshot
+		}),
+		WithGetAccountPresence(testAccountPresence),
+	)
+	hub.PrimaryAccount = "discord-ipc-0"
+	hub.PrimaryAccountFunc = func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return primary
+	}
+
+	conn := testDial(t, ts)
+	defer conn.Close()
+	waitForClientCount(t, hub, 1)
+
+	testRequestCurrent(t, conn)
+	if msg := testRead(t, conn); msg.Account != "discord-ipc-0" {
+		t.Fatalf("account = %q, want %q", msg.Account, "discord-ipc-0")
+	}
+
+	mu.Lock()
+	primary = "discord-ipc-1"
+	mu.Unlock()
+
+	testRequestCurrent(t, conn)
+	if msg := testRead(t, conn); msg.Account != "discord-ipc-1" {
+		t.Errorf("account = %q, want the switched primary %q", msg.Account, "discord-ipc-1")
 	}
 }
 

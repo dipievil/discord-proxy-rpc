@@ -72,13 +72,21 @@ func main() {
 	defer presences.Stop()
 
 	accounts := manager.Accounts()
-	primary := manager.Primary()
 	multiAccount := len(accounts) > 1
 
 	hub := server.NewHub(logger)
 	hub.ClientID = cfg.Discord.ClientID
-	if multiAccount && primary != nil {
-		hub.PrimaryAccount = primary.Name
+	// The primary is resolved per frame, so get_current and the state snapshot
+	// keep naming an account that is actually connected after a reconnect. A
+	// single-account deployment leaves the field empty, as before.
+	hub.PrimaryAccountFunc = func() string {
+		if !multiAccount {
+			return ""
+		}
+		if primary := manager.Primary(); primary != nil {
+			return primary.Name()
+		}
+		return ""
 	}
 	go hub.Run(ctx)
 
@@ -97,7 +105,7 @@ func main() {
 	}
 
 	for _, account := range accounts {
-		presence := presences.For(account.Name)
+		presence := presences.For(account.Key())
 
 		presence.Subscribe(func(update state.PresenceUpdate) {
 			if metrics != nil {
@@ -113,7 +121,7 @@ func main() {
 				return
 			}
 			if multiAccount {
-				msg.Account = account.Name
+				msg.Account = account.Name()
 				msg.ClientID = cfg.Discord.ClientID
 			}
 			hub.Broadcast(msg)
@@ -121,31 +129,52 @@ func main() {
 	}
 
 	primarySnapshot := func() types.PresenceSnapshot {
+		primary := manager.Primary()
 		if primary == nil {
 			return types.PresenceSnapshot{Source: types.SourceNone}
 		}
-		snapshot, ok := presences.Snapshot(primary.Name)
+		snapshot, ok := presences.Snapshot(primary.Key())
 		if !ok {
 			return types.PresenceSnapshot{Source: types.SourceNone}
 		}
 		return snapshot
 	}
 
+	accountPresence := func(name string) (types.PresenceSnapshot, bool) {
+		account, ok := manager.Account(name)
+		if !ok {
+			return types.PresenceSnapshot{}, false
+		}
+		return presences.Snapshot(account.Key())
+	}
+
 	listAccounts := func() []server.AccountStatus {
+		primary := manager.Primary()
 		tracked := manager.Accounts()
 		out := make([]server.AccountStatus, 0, len(tracked))
-		for _, account := range tracked {
+		appendAccount := func(account *ipc.Account) {
 			out = append(out, server.AccountStatus{
-				Account: account.Name,
+				Account: account.Name(),
 				State:   account.Client.State().String(),
 			})
+		}
+		// The primary leads the list, so a consumer that takes the first entry
+		// keeps following it across reconnects.
+		if primary != nil {
+			appendAccount(primary)
+		}
+		for _, account := range tracked {
+			if account == primary {
+				continue
+			}
+			appendAccount(account)
 		}
 		return out
 	}
 
 	opts := []server.ServerOption{
 		server.WithGetCurrentPresence(primarySnapshot),
-		server.WithGetAccountPresence(presences.Snapshot),
+		server.WithGetAccountPresence(accountPresence),
 		server.WithListAccounts(listAccounts),
 		server.WithGetIPCState(ipcState),
 		server.WithWSPath(cfg.Server.WsPath),
@@ -179,14 +208,14 @@ func main() {
 	// once that account will not open another session; its event loop then
 	// emits one terminal disconnected for that account.
 	for _, account := range accounts {
-		presence := presences.For(account.Name)
+		presence := presences.For(account.Key())
 		ipcDone := make(chan struct{})
 
-		go runAccountEventLoop(ctx, account.Name, account.Client, presence, hub, ipcDone, multiAccount, logger)
+		go runAccountEventLoop(ctx, account.Name(), account.Client, presence, hub, ipcDone, multiAccount, logger)
 		go func() {
 			defer close(ipcDone)
 			if err := account.Client.RunWithReconnect(ctx, cfg.Discord); err != nil && ctx.Err() == nil {
-				logger.Warn("IPC client stopped", zap.String("account", account.Name), zap.Error(err))
+				logger.Warn("IPC client stopped", zap.String("account", account.Name()), zap.Error(err))
 			}
 		}()
 	}
