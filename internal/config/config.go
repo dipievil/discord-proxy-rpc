@@ -12,6 +12,8 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	"github.com/discord-proxy-rpc/discord-proxy-rpc/internal/platform"
 )
 
 type DiscordConfig struct {
@@ -22,6 +24,9 @@ type DiscordConfig struct {
 	HealthCheckInterval   time.Duration `mapstructure:"health_check_interval"   yaml:"health_check_interval"`
 	HealthCheckTimeout    time.Duration `mapstructure:"health_check_timeout"    yaml:"health_check_timeout"`
 	CoalesceInterval      time.Duration `mapstructure:"coalesce_interval"       yaml:"coalesce_interval"`
+	// MaxAccounts is how many Discord IPC accounts (one per discord-ipc-{0..9}
+	// pipe) the proxy tracks. The default 1 keeps the single-account contract.
+	MaxAccounts int `mapstructure:"max_accounts" yaml:"max_accounts"`
 }
 
 // TLS transport modes reported by TLSConfig.Mode and advertised over mDNS.
@@ -116,6 +121,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("discord.health_check_interval", 30*time.Second)
 	v.SetDefault("discord.health_check_timeout", 10*time.Second)
 	v.SetDefault("discord.coalesce_interval", 5*time.Second)
+	v.SetDefault("discord.max_accounts", 1)
 
 	v.SetDefault("server.host", "0.0.0.0")
 	v.SetDefault("server.port", 8765)
@@ -157,6 +163,7 @@ func setupEnv(v *viper.Viper) {
 	_ = v.BindEnv("discord.health_check_interval", "PROXY_DISCORD_HEALTH_CHECK_INTERVAL")
 	_ = v.BindEnv("discord.health_check_timeout", "PROXY_DISCORD_HEALTH_CHECK_TIMEOUT")
 	_ = v.BindEnv("discord.coalesce_interval", "PROXY_DISCORD_COALESCE_INTERVAL")
+	_ = v.BindEnv("discord.max_accounts", "PROXY_DISCORD_MAX_ACCOUNTS")
 
 	_ = v.BindEnv("server.host", "PROXY_SERVER_HOST")
 	_ = v.BindEnv("server.port", "PROXY_SERVER_PORT")
@@ -238,6 +245,14 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("discord.client_id %q is not a valid Discord Application ID: expected digits only (Discord Developer Portal > General Information > Application ID)", id)
 	}
 	c.Discord.ClientID = id
+
+	if c.Discord.MaxAccounts == 0 {
+		c.Discord.MaxAccounts = 1
+	}
+	if c.Discord.MaxAccounts < 1 || c.Discord.MaxAccounts > platform.SlotCount {
+		return fmt.Errorf("discord.max_accounts %d is out of range: expected 1..%d (one IPC account per discord-ipc-{0..9} pipe)",
+			c.Discord.MaxAccounts, platform.SlotCount)
+	}
 
 	for i, entry := range c.Server.TrustedProxies {
 		network := strings.TrimSpace(entry)

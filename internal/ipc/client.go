@@ -75,17 +75,26 @@ type Client struct {
 	ipcConn     *gopresenceipc.Client
 	presence    *presence.Client
 	user        string
+	path        string
 	state       State
 	events      chan Event
 	healthCheck *HealthCheckManager
 }
 
-// New returns a Client for the given Discord application and logger.
+// New returns a Client for the given Discord application and logger. It scans
+// the platform's discord-ipc-{0..9} sockets in order.
 func New(clientID string, logger *zap.Logger) *Client {
+	return NewWithPaths(clientID, platform.IPCPaths(), logger)
+}
+
+// NewWithPaths returns a Client that only dials the given socket paths, in
+// order. The account manager uses it to bind one client to a single pipe slot
+// while keeping the reconnect and health-check logic identical to New.
+func NewWithPaths(clientID string, paths []string, logger *zap.Logger) *Client {
 	return &Client{
 		clientID: clientID,
 		logger:   logger,
-		paths:    platform.IPCPaths(),
+		paths:    paths,
 		timeout:  connectTimeout,
 		state:    StateDisconnected,
 	}
@@ -103,6 +112,14 @@ func (c *Client) User() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.user
+}
+
+// Socket reports the IPC socket path used by the most recent successful
+// connection ("" until the first connect).
+func (c *Client) Socket() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.path
 }
 
 // Events returns the output channel for the current IPC session. The channel
@@ -141,6 +158,7 @@ func (c *Client) Connect() error {
 		c.ipcConn = conn
 		c.presence = pres
 		c.user = displayName(ready)
+		c.path = path
 		c.events = make(chan Event, eventBufferSize)
 		c.mu.Unlock()
 

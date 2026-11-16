@@ -17,6 +17,7 @@ const (
 	ErrCodePayloadTooLarge ErrorCode = "REQ_001"
 	ErrCodeRateLimited     ErrorCode = "REQ_002"
 	ErrCodeTooManyConns    ErrorCode = "REQ_003"
+	ErrCodeAccountNotFound ErrorCode = "REQ_004"
 )
 
 type APIError struct {

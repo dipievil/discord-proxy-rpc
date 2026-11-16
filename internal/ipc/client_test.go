@@ -47,11 +47,25 @@ type mockDiscord struct {
 
 func newMockDiscord(t *testing.T) *mockDiscord {
 	t.Helper()
+	return newMockDiscordNamed(t, "discord-ipc-0")
+}
+
+// newMockDiscordNamed listens on a socket with the given file name, so manager
+// tests can present several distinct pipe slots.
+func newMockDiscordNamed(t *testing.T, name string) *mockDiscord {
+	t.Helper()
+	return newMockDiscordAt(t, filepath.Join(t.TempDir(), name))
+}
+
+// newMockDiscordAt listens on an explicit socket path. Manager tests use it to
+// bring a slot up after the manager already claimed it, which is what a second
+// Discord account starting later looks like.
+func newMockDiscordAt(t *testing.T, path string) *mockDiscord {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("unix socket mock not supported on windows")
 	}
 
-	path := filepath.Join(t.TempDir(), "discord-ipc-0")
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatalf("listening mock socket: %v", err)

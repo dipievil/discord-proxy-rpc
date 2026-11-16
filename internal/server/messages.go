@@ -30,6 +30,11 @@ type ServerMessage struct {
 	Payload  json.RawMessage `json:"payload,omitempty"`
 	Status   ConnectionState `json:"status,omitempty"`
 	ClientID string          `json:"client_id,omitempty"`
+	// Account identifies the Discord IPC account (pipe slot, e.g.
+	// "discord-ipc-1") a presence, current or state frame belongs to. It is
+	// omitted with a single account, so those frames stay byte-identical to
+	// the pre-multi-account contract.
+	Account string `json:"account,omitempty"`
 }
 
 func (m *ServerMessage) UnmarshalJSON(data []byte) error {
@@ -76,6 +81,10 @@ func (e SubscribeEvents) MarshalJSON() ([]byte, error) {
 type ClientMessage struct {
 	Type            string          `json:"type"`
 	SubscribeEvents SubscribeEvents `json:"events,omitempty"`
+	// Account optionally scopes get_current to one account. Without it the
+	// answer describes the primary account, which is the only one before
+	// discord.max_accounts is raised.
+	Account string `json:"account,omitempty"`
 }
 
 func (m *ClientMessage) UnmarshalJSON(data []byte) error {

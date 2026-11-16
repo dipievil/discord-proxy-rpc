@@ -10,8 +10,8 @@ import (
 
 func TestIPCPathsReturns10Paths(t *testing.T) {
 	paths := IPCPaths()
-	if len(paths) != ipcNameCount {
-		t.Errorf("expected %d paths, got %d", ipcNameCount, len(paths))
+	if len(paths) != SlotCount {
+		t.Errorf("expected %d paths, got %d", SlotCount, len(paths))
 	}
 }
 

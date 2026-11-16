@@ -160,6 +160,34 @@ if wait_for_ready "server"; then
         fail "/api/state unexpected response: ${STATE:-<no response>}"
     fi
 
+    # Single-account default: /api/state must stay the pre-multi-account body.
+    if echo "$STATE" | grep -q '"accounts"'; then
+        fail "/api/state carries an accounts field with the default single account: ${STATE}"
+    else
+        pass "/api/state omits accounts with the default single account"
+    fi
+
+    ACCOUNTS=$(curl -sf "$BASE/api/accounts" || true)
+    if echo "$ACCOUNTS" | grep -q '"account":"discord-ipc-0"'; then
+        pass "/api/accounts lists the tracked account"
+    else
+        fail "/api/accounts unexpected response: ${ACCOUNTS:-<no response>}"
+    fi
+
+    CODE=$(http_code "$BASE/api/presence?account=discord-ipc-0")
+    if [[ "$CODE" == "200" ]]; then
+        pass "/api/presence selects a tracked account"
+    else
+        fail "/api/presence?account=discord-ipc-0 returned ${CODE}, want 200"
+    fi
+
+    CODE=$(http_code "$BASE/api/presence?account=discord-ipc-9")
+    if [[ "$CODE" == "404" ]]; then
+        pass "/api/presence rejects an untracked account with 404"
+    else
+        fail "/api/presence?account=discord-ipc-9 returned ${CODE}, want 404"
+    fi
+
     PRES=$(curl -sf "$BASE/api/presence" || true)
     if echo "$PRES" | grep -q '"source"' && echo "$PRES" | grep -q '"activity"'; then
         pass "/api/presence returns a presence snapshot (source/activity)"
@@ -187,6 +215,75 @@ else
     exit 1
 fi
 
+# --- Phase 4a: Binary E2E with multiple accounts ---
+# With discord.max_accounts above 1 the proxy claims one IPC slot per account
+# and the account surface becomes visible: /api/accounts lists every slot and
+# /api/state carries the additive accounts array.
+echo "--- Phase 4a: Binary E2E (multiple accounts) ---"
+
+# The phase-4 server is still running on ${PORT}; stop it before reusing the port.
+kill "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true
+PID=""
+rm -f "$BINARY_LOG" "$COOKIE_JAR"
+
+PROXY_DISCORD_CLIENT_ID="000000000000000000" \
+PROXY_DISCORD_AUTO_RECONNECT="false" \
+PROXY_DISCORD_MAX_ACCOUNTS="2" \
+PROXY_SERVER_HOST="127.0.0.1" \
+PROXY_SERVER_PORT="$PORT" \
+PROXY_SERVER_WS_PATH="/ws" \
+PROXY_SERVER_RATE_LIMIT_PER_IP="1000" \
+PROXY_AUTH_ENABLED="false" \
+PROXY_MDNS_ENABLED="false" \
+PROXY_LOGGING_LEVEL="error" \
+PROXY_LOGGING_FORMAT="console" \
+    "$BINARY" >"$BINARY_LOG" 2>&1 &
+PID=$!
+
+if wait_for_ready "multi-account server"; then
+    pass "Multi-account server became ready on port ${PORT}"
+
+    ACCOUNTS=$(curl -sf "$BASE/api/accounts" || true)
+    if echo "$ACCOUNTS" | grep -q '"account":"discord-ipc-0"' \
+        && echo "$ACCOUNTS" | grep -q '"account":"discord-ipc-1"'; then
+        pass "/api/accounts lists both tracked accounts"
+    else
+        fail "/api/accounts unexpected response: ${ACCOUNTS:-<no response>}"
+    fi
+
+    STATE=$(curl -sf "$BASE/api/state" || true)
+    if echo "$STATE" | grep -q '"accounts":\['; then
+        pass "/api/state carries the accounts array with multiple accounts"
+    else
+        fail "/api/state unexpected response: ${STATE:-<no response>}"
+    fi
+
+    CODE=$(http_code "$BASE/api/presence?account=discord-ipc-1")
+    if [[ "$CODE" == "200" ]]; then
+        pass "/api/presence selects the second account"
+    else
+        fail "/api/presence?account=discord-ipc-1 returned ${CODE}, want 200"
+    fi
+
+    CODE=$(http_code "$BASE/api/presence")
+    if [[ "$CODE" == "200" ]]; then
+        pass "/api/presence without a selector answers for the primary account"
+    else
+        fail "/api/presence returned ${CODE} with multiple accounts, want 200"
+    fi
+else
+    dump_binary_log
+    fail "Multi-account server did not become ready on port ${PORT} within ${STARTUP_TIMEOUT}s"
+    summary
+    exit 1
+fi
+
+kill "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true
+PID=""
+echo ""
+
 # --- Phase 4b: Binary E2E with auth enabled ---
 # With auth on, the data surface (dashboard + /api/*) must reject anonymous
 # requests, health probes stay open for k8s, and the token must be accepted as
@@ -195,10 +292,6 @@ echo "--- Phase 4b: Binary E2E (auth enabled) ---"
 
 AUTH_TOKEN="e2e-auth-token"
 
-# The phase-4 server is still running on ${PORT}; stop it before reusing the port.
-kill "$PID" 2>/dev/null || true
-wait "$PID" 2>/dev/null || true
-PID=""
 rm -f "$BINARY_LOG" "$COOKIE_JAR"
 
 PROXY_DISCORD_CLIENT_ID="000000000000000000" \
@@ -227,7 +320,7 @@ if wait_for_ready "auth-enabled server"; then
         fi
     done
 
-    for ep in /api/presence /api/state /; do
+    for ep in /api/presence /api/state /api/accounts /; do
         CODE=$(http_code "$BASE$ep")
         if [[ "$CODE" == "401" ]]; then
             pass "${ep} returns 401 without a token (auth enabled)"
