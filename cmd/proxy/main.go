@@ -63,45 +63,91 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	client := ipc.New(cfg.Discord.ClientID, logger)
-	if err := client.Connect(); err != nil {
-		logger.Warn("initial IPC connect failed, will reconnect", zap.Error(err))
-	}
+	manager := ipc.NewManager(cfg.Discord.ClientID, cfg.Discord.MaxAccounts, logger)
+	manager.Connect()
+	defer manager.Close()
 
-	presence := state.NewPresence(cfg.Discord.CoalesceInterval, logger)
-	presence.Start(ctx)
-	defer presence.Stop()
+	presences := state.NewRegistry(cfg.Discord.CoalesceInterval, logger)
+	presences.Start(ctx)
+	defer presences.Stop()
+
+	accounts := manager.Accounts()
+	primary := manager.Primary()
+	multiAccount := len(accounts) > 1
 
 	hub := server.NewHub(logger)
 	hub.ClientID = cfg.Discord.ClientID
+	if multiAccount && primary != nil {
+		hub.PrimaryAccount = primary.Name
+	}
 	go hub.Run(ctx)
 
 	rateLimiter := server.NewRateLimiter(cfg.Server.RateLimitPerIP, cfg.Server.RateLimitWindow)
 
-	var metrics *server.Metrics
-	if cfg.Metrics.Enabled {
-		metrics = server.NewMetrics(hub, func() string { return client.State().String() }, rateLimiter)
+	ipcState := func() string {
+		if primary := manager.Primary(); primary != nil {
+			return primary.Client.State().String()
+		}
+		return ipc.StateDisconnected.String()
 	}
 
-	presence.Subscribe(func(update state.PresenceUpdate) {
-		if metrics != nil {
-			metrics.RecordPresenceSend()
-		}
-		activity := update.Activity
-		msg, err := server.NewPresenceMessage(types.PresenceSnapshot{
-			Source:   types.SourceIPC,
-			Activity: &activity,
+	var metrics *server.Metrics
+	if cfg.Metrics.Enabled {
+		metrics = server.NewMetrics(hub, ipcState, rateLimiter)
+	}
+
+	for _, account := range accounts {
+		presence := presences.For(account.Name)
+
+		presence.Subscribe(func(update state.PresenceUpdate) {
+			if metrics != nil {
+				metrics.RecordPresenceSend()
+			}
+			activity := update.Activity
+			msg, err := server.NewPresenceMessage(types.PresenceSnapshot{
+				Source:   types.SourceIPC,
+				Activity: &activity,
+			})
+			if err != nil {
+				logger.Error("failed to create presence message", zap.Error(err))
+				return
+			}
+			if multiAccount {
+				msg.Account = account.Name
+				msg.ClientID = cfg.Discord.ClientID
+			}
+			hub.Broadcast(msg)
 		})
-		if err != nil {
-			logger.Error("failed to create presence message", zap.Error(err))
-			return
+	}
+
+	primarySnapshot := func() types.PresenceSnapshot {
+		if primary == nil {
+			return types.PresenceSnapshot{Source: types.SourceNone}
 		}
-		hub.Broadcast(msg)
-	})
+		snapshot, ok := presences.Snapshot(primary.Name)
+		if !ok {
+			return types.PresenceSnapshot{Source: types.SourceNone}
+		}
+		return snapshot
+	}
+
+	listAccounts := func() []server.AccountStatus {
+		tracked := manager.Accounts()
+		out := make([]server.AccountStatus, 0, len(tracked))
+		for _, account := range tracked {
+			out = append(out, server.AccountStatus{
+				Account: account.Name,
+				State:   account.Client.State().String(),
+			})
+		}
+		return out
+	}
 
 	opts := []server.ServerOption{
-		server.WithGetCurrentPresence(presence.Snapshot),
-		server.WithGetIPCState(func() string { return client.State().String() }),
+		server.WithGetCurrentPresence(primarySnapshot),
+		server.WithGetAccountPresence(presences.Snapshot),
+		server.WithListAccounts(listAccounts),
+		server.WithGetIPCState(ipcState),
 		server.WithWSPath(cfg.Server.WsPath),
 		server.WithRateLimiter(rateLimiter),
 		server.WithTrustedProxies(cfg.Server.TrustedProxies),
@@ -128,17 +174,22 @@ func main() {
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}
 
-	// ipcDone is closed once the IPC client gives up, i.e. when no further
-	// session will be attempted; the event loop turns that into one terminal
-	// disconnected state for WebSocket clients.
-	ipcDone := make(chan struct{})
-	go runIPCEventLoop(ctx, client, presence, hub, ipcDone, logger)
-	go func() {
-		defer close(ipcDone)
-		if err := client.RunWithReconnect(ctx, cfg.Discord); err != nil && ctx.Err() == nil {
-			logger.Warn("IPC client stopped", zap.Error(err))
-		}
-	}()
+	// Each account owns its own reconnect loop and event loop, so one account
+	// dropping or exhausting its retries never stops another. ipcDone is closed
+	// once that account will not open another session; its event loop then
+	// emits one terminal disconnected for that account.
+	for _, account := range accounts {
+		presence := presences.For(account.Name)
+		ipcDone := make(chan struct{})
+
+		go runAccountEventLoop(ctx, account.Name, account.Client, presence, hub, ipcDone, multiAccount, logger)
+		go func() {
+			defer close(ipcDone)
+			if err := account.Client.RunWithReconnect(ctx, cfg.Discord); err != nil && ctx.Err() == nil {
+				logger.Warn("IPC client stopped", zap.String("account", account.Name), zap.Error(err))
+			}
+		}()
+	}
 
 	tlsCfg, err := server.NewTLSConfig(cfg.Server.TLS)
 	if err != nil {
@@ -181,8 +232,6 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("HTTP server shutdown error", zap.Error(err))
 	}
-
-	client.Close()
 }
 
 // ipcEventSource is the part of the IPC client the event loop depends on, so
@@ -196,6 +245,23 @@ type ipcEventSource interface {
 // reports that no further session will be attempted, the loop broadcasts one
 // terminal disconnected instead and returns.
 func runIPCEventLoop(ctx context.Context, source ipcEventSource, presence *state.Presence, hub *server.Hub, ipcDone <-chan struct{}, logger *zap.Logger) {
+	runAccountEventLoop(ctx, "", source, presence, hub, ipcDone, false, logger)
+}
+
+// runAccountEventLoop is runIPCEventLoop scoped to one account: presence updates
+// flow into that account's state machine and state frames carry its identity
+// when more than one account is tracked.
+func runAccountEventLoop(ctx context.Context, account string, source ipcEventSource, presence *state.Presence, hub *server.Hub, ipcDone <-chan struct{}, multiAccount bool, logger *zap.Logger) {
+	accountField := ""
+	if multiAccount {
+		accountField = account
+	}
+	stateMessage := func(status server.ConnectionState) server.ServerMessage {
+		msg := server.NewStateMessage(status)
+		msg.Account = accountField
+		return msg
+	}
+
 	for {
 		events := source.Events()
 		if events == nil {
@@ -206,9 +272,9 @@ func runIPCEventLoop(ctx context.Context, source ipcEventSource, presence *state
 				if ctx.Err() != nil {
 					return
 				}
-				logger.Info("IPC session ended and will not reconnect")
-				if !hub.BroadcastWait(ctx, server.NewStateMessage(server.StateDisconnected)) {
-					logger.Error("terminal disconnected state was not delivered")
+				logger.Info("IPC session ended and will not reconnect", zap.String("account", account))
+				if !hub.BroadcastWait(ctx, stateMessage(server.StateDisconnected)) {
+					logger.Error("terminal disconnected state was not delivered", zap.String("account", account))
 				}
 				return
 			case <-time.After(500 * time.Millisecond):
@@ -216,23 +282,23 @@ func runIPCEventLoop(ctx context.Context, source ipcEventSource, presence *state
 			continue
 		}
 
-		hub.Broadcast(server.NewStateMessage(server.StateConnected))
+		hub.Broadcast(stateMessage(server.StateConnected))
 
 		for event := range events {
 			if event.Err != nil {
-				logger.Debug("IPC event error", zap.Error(event.Err))
+				logger.Debug("IPC event error", zap.Error(event.Err), zap.String("account", account))
 				break
 			}
 			if event.Opcode == ipc.OpFrame && event.Frame != nil {
 				activity, err := ipc.ParseActivityFrame(event.Frame)
 				if err != nil {
-					logger.Debug("failed to parse activity", zap.Error(err))
+					logger.Debug("failed to parse activity", zap.Error(err), zap.String("account", account))
 					continue
 				}
 				presence.Update(activity)
 			}
 		}
 
-		hub.Broadcast(server.NewStateMessage(server.StateReconnecting))
+		hub.Broadcast(stateMessage(server.StateReconnecting))
 	}
 }

@@ -532,3 +532,42 @@ func TestSubscribeEventValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestGetCurrentMessageDecodesAccount(t *testing.T) {
+	msg, err := ParseClientMessage([]byte(`{"type":"get_current","account":"discord-ipc-1"}`))
+	if err != nil {
+		t.Fatalf("ParseClientMessage: %v", err)
+	}
+	if msg.Account != "discord-ipc-1" {
+		t.Errorf("Account = %q, want %q", msg.Account, "discord-ipc-1")
+	}
+}
+
+func TestServerMessageAccountOmittedWhenEmpty(t *testing.T) {
+	msg, err := NewCurrentMessage(testSnapshot(types.Activity{Details: "No Account"}))
+	if err != nil {
+		t.Fatalf("NewCurrentMessage: %v", err)
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"account"`) {
+		t.Errorf("marshalled message %s carries an empty account field", data)
+	}
+
+	msg.Account = "discord-ipc-1"
+	data, err = json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal with account: %v", err)
+	}
+
+	var decoded ServerMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if decoded.Account != "discord-ipc-1" {
+		t.Errorf("Account = %q, want %q", decoded.Account, "discord-ipc-1")
+	}
+}

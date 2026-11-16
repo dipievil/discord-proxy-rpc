@@ -92,12 +92,13 @@ The summary ends with either `No ACTIVITY frame was observed…` (confirming the
   - Parse `ACTIVITY` frames → normalized internal struct **when any arrive**; Discord does not push another application's activity today, so this path is currently dormant (see [Activity source](#activity-source))
 - **Reconnection**: Exponential backoff: 5s, 10s, 20s, 40s, 60s (max), jitter ±10%
 - **Health**: Periodic PING (Discord IPC opcode 3) every 30s
+- **Multiple accounts (task 11.2)**: `Client` stays single-socket. `ipc.Manager` owns one `Client` per tracked account, up to `discord.max_accounts`, and claims distinct `discord-ipc-*` slots (account identity = the pipe slot, e.g. `discord-ipc-1`). With one account the manager scans every slot and keeps the first that handshakes; with several it binds each account to the lowest unclaimed slot that answers and keeps a claimed slot Discord has not opened yet in place, so the normal reconnect loop attaches to it later. Accounts are then ordered by slot, making the lowest tracked slot the primary. Each account runs its own reconnect loop and health check, so no account can stall another. `/health`, `/readyz`, the metrics `discord_proxy_ipc_connected` gauge, the tray and the dashboard header all follow that primary account; `/api/accounts` reports every account.
 
 ### 2. Presence State Machine (`internal/state/`)
 
-- **Cache**: Single `Presence` struct (last known activity + whether a source has ever supplied one)
-- **Diff**: Deep compare new vs cached; only emit `PresenceUpdate` event on change
-- **Coalesce**: Buffer incoming IPC updates for 5s; emit latest at window end
+- **Cache**: One `Presence` struct per Discord account (last known activity + whether a source has ever supplied one), held in a `Registry` keyed by account identity
+- **Diff**: Deep compare new vs cached **per account**; only emit `PresenceUpdate` event on change
+- **Coalesce**: Buffer incoming IPC updates for 5s **per account**; emit latest at window end. Two accounts never coalesce into one another
 - **Thread-safety**: All access via mutex; callbacks executed async (non-blocking)
 
 ### 3. LAN Server (`internal/server/`)
@@ -108,8 +109,9 @@ The summary ends with either `No ACTIVITY frame was observed…` (confirming the
 |-------|--------|-------------|----------------|----------------|
 | `/` | GET | Dashboard SPA (embedded static files) | `text/html` | — |
 | `/ws` | GET | WebSocket upgrade → API | `101 Switching Protocols` | — |
-| `/api/presence` | GET | Current presence snapshot (`{"source":"none\|ipc","activity":Activity\|null}`) | `PresenceSnapshot` object | — |
-| `/api/state` | GET | IPC connection state JSON | `{"status":"connected\|disconnected\|reconnecting"}` | — |
+| `/api/presence` | GET | Current presence snapshot (`{"source":"none\|ipc","activity":Activity\|null}`); `?account=<slot>` selects one account (task 11.2) | `PresenceSnapshot` object | — |
+| `/api/state` | GET | IPC connection state JSON; carries `accounts` once more than one account is tracked | `{"status":"connected\|disconnected\|reconnecting"}` | — |
+| `/api/accounts` | GET | Tracked Discord IPC accounts and their states, primary (lowest pipe slot) first (task 11.2) | `{"accounts":[{"account":"discord-ipc-0","state":"connected"}]}` | — |
 | `/health` | GET | **Rich liveness probe** — includes IPC state | `{"status":"ok","ipc":"<state>"}` | — |
 | `/healthz` | GET | **Minimal liveness probe** (k8s-compatible) | `{"status":"ok"}` | — |
 | `/readyz` | GET | **Readiness probe** — reflects IPC connectivity | `{"status":"ok","ipc":"connected"}` | `{"status":"not ready","ipc":"disconnected"}` |
@@ -132,9 +134,9 @@ When `metrics.enabled: true`, the server registers `/metrics` (Prometheus text f
 | `discord_proxy_ipc_connected` | gauge (0/1) | IPC state getter at scrape time (`connected` ⇒ 1) |
 | `discord_proxy_rate_limit_rejections_total` | counter | `RateLimiter` denial counter (dashboard, REST and WS rejections) |
 
-**Access control:** when `auth.enabled: true`, `/`, `/index.html`, the embedded static assets, `/api/presence` and `/api/state` require the bearer token; `/health`, `/healthz` and `/readyz` stay open so probes work without credentials. API routes answer an unauthenticated request with the `AUTH_001` JSON envelope (HTTP 401), while the dashboard answers a plain-text 401.
+**Access control:** when `auth.enabled: true`, `/`, `/index.html`, the embedded static assets, `/api/presence`, `/api/state` and `/api/accounts` require the bearer token; `/health`, `/healthz` and `/readyz` stay open so probes work without credentials. API routes answer an unauthenticated request with the `AUTH_001` JSON envelope (HTTP 401), while the dashboard answers a plain-text 401.
 
-**Rate limiting:** a single per-IP limiter (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 60 requests per minute) guards the dashboard and its static assets, `/api/presence`, `/api/state` and the WebSocket upgrade; all routes share one budget per IP. The middleware runs before auth so unauthenticated floods are rejected without the constant-time token comparison. Rejections answer HTTP 429 with a `Retry-After` header in whole seconds and `Cache-Control: no-store`; REST and WS routes carry the `REQ_002` envelope, while the dashboard answers plain text for direct rendering in the tab. A rejection increments `discord_proxy_rate_limit_rejections_total`; the first rejection per IP per window is logged at warning level and later ones at debug, so a reconnect loop cannot flood the log. `/health`, `/healthz`, `/readyz` and `/metrics` are deliberately registered without the middleware: probes and Prometheus scrapes must keep working while an IP is limited, and they are not useful amplification targets. A limiter that is `nil` or has a non-positive rate or window is disabled. The default budget covers a dashboard load, which costs four requests (HTML, CSS, JS and the WS upgrade), plus several reloads and reconnect attempts.
+**Rate limiting:** a single per-IP limiter (`server.rate_limit_per_ip` / `server.rate_limit_window`, defaults 60 requests per minute) guards the dashboard and its static assets, `/api/presence`, `/api/state`, `/api/accounts` and the WebSocket upgrade; all routes share one budget per IP. The middleware runs before auth so unauthenticated floods are rejected without the constant-time token comparison. Rejections answer HTTP 429 with a `Retry-After` header in whole seconds and `Cache-Control: no-store`; REST and WS routes carry the `REQ_002` envelope, while the dashboard answers plain text for direct rendering in the tab. A rejection increments `discord_proxy_rate_limit_rejections_total`; the first rejection per IP per window is logged at warning level and later ones at debug, so a reconnect loop cannot flood the log. `/health`, `/healthz`, `/readyz` and `/metrics` are deliberately registered without the middleware: probes and Prometheus scrapes must keep working while an IP is limited, and they are not useful amplification targets. A limiter that is `nil` or has a non-positive rate or window is disabled. The default budget covers a dashboard load, which costs four requests (HTML, CSS, JS and the WS upgrade), plus several reloads and reconnect attempts.
 
 **Client identity:** the limiter keys on the TCP peer (`RemoteAddr`) by default. `server.trusted_proxies` lists CIDR blocks whose `X-Forwarded-For` is honoured; when the peer is trusted the limiter takes the last hop that is not itself trusted, so clients behind an ingress keep separate budgets and an untrusted client cannot forge its IP. An empty list ignores forwarding headers entirely.
 
@@ -175,7 +177,9 @@ The server echoes the offered `proxy-token-*` subprotocol back on success so the
 
 `payload` on `presence` and `current` is a **presence snapshot** (see [Activity source](#activity-source)); `activity` is `null` whenever `source` is `"none"`. `client_id` (the Discord Application ID from `discord.client_id`) is always included on `state` and `current` messages — it is required at startup (task 9.3) — so clients can identify which Discord account the proxy is attached to.
 
-**State on subscribe.** A `subscribe` that includes `state` is answered with one `state` frame carrying the proxy's current IPC state, mapped from `/api/state` (`connected`, `reconnecting`, or `disconnected`), before any later push. The snapshot is produced by the same fan-out loop that delivers state pushes, so an older transition can never overtake it and leave the client on a stale state. The frame goes only to the subscribing client and includes `client_id`. A client must not infer IPC connectivity from the WebSocket being open: an open socket only means the proxy accepted the connection.
+**Account identity (task 11.2).** Once more than one Discord account is tracked (`discord.max_accounts` > 1), `presence`, `current` and `state` frames also carry `account` — the pipe slot such as `"discord-ipc-1"` — and `client_id` is added to `presence` frames too. A `presence` frame describes only its own account: each account has its own cache, diff and coalesce window, so two accounts never merge or suppress each other's updates. With a single account the `account` field is omitted entirely, so those frames stay byte-identical to the pre-multi-account contract.
+
+**State on subscribe.** A `subscribe` that includes `state` is answered with one `state` frame carrying the proxy's current IPC state, mapped from `/api/state` (`connected`, `reconnecting`, or `disconnected`), before any later push. The snapshot is produced by the same fan-out loop that delivers state pushes, so an older transition can never overtake it and leave the client on a stale state. The frame goes only to the subscribing client and includes `client_id`. A client must not infer IPC connectivity from the WebSocket being open: an open socket only means the proxy accepted the connection. The snapshot describes the primary account and, when several accounts are tracked, carries its `account`.
 
 **Terminal state.** `reconnecting` means the proxy will attempt another IPC session. When no further session will be attempted — `discord.auto_reconnect: false`, reconnect attempts exhausted, or the IPC client stopped for another reason — the proxy emits exactly one final `disconnected` and stops broadcasting `reconnecting`. That frame is queued with a blocking send, so a full broadcast buffer delays it instead of dropping it.
 
@@ -184,7 +188,10 @@ The server echoes the offered `proxy-token-*` subprotocol back on success so the
 ```json
 { "type": "subscribe", "events": ["presence", "state"] }
 { "type": "get_current" }
+{ "type": "get_current", "account": "discord-ipc-1" }
 ```
+
+The `account` field on `get_current` is optional and only meaningful with multiple accounts: it scopes the `current` answer to that account. Without it the answer describes the **primary** account (lowest pipe slot). An unknown account answers an `error` frame with `MSG_001` instead of falling back to another account's presence, so a client can never render one account's data under another account's identity.
 
 **Server → Client (error response)**
 
@@ -202,6 +209,7 @@ Error frames are sent in direct response to a client message that could not be p
 | `REQ_001` | `ErrCodePayloadTooLarge` | Request body exceeds the 1 MiB cap (HTTP 413) |
 | `REQ_002` | `ErrCodeRateLimited` | Request rate limit exceeded on the dashboard, REST or WS upgrade (HTTP 429, with `Retry-After`) |
 | `REQ_003` | `ErrCodeTooManyConns` | Max concurrent WS connections reached (HTTP 503) |
+| `REQ_004` | `ErrCodeAccountNotFound` | `/api/presence?account=<slot>` named an account the proxy does not track (HTTP 404) |
 
 HTTP-level errors on the API and WS surface (auth failure, oversized body, rate limit, connection cap, recovered panic) use the same codes in a top-level JSON envelope: `{ "code": "<CODE>", "error": "<message>" }`; dashboard routes answer 401 and 429 as plain text because the browser renders the body directly. A rate-limit rejection also carries `Retry-After` with the remaining seconds in the current window and `Cache-Control: no-store`. WS `error` frames instead nest them under `payload` as `{ "code", "message" }`.
 
@@ -283,6 +291,7 @@ go run ./cmd/discover -timeout 5s -json  # {"count":N,"proxies":[...]}
 - **Library**: `github.com/spf13/viper`
 - Sources (priority): env > YAML > defaults (the binary has no config flags; `-version` only prints the build stamp and exits)
 - Config file: `config.yaml` (search: `.`, `/etc/discord-proxy-rpc/`, `$HOME/.config/discord-proxy-rpc/`)
+- `discord.max_accounts` (env `PROXY_DISCORD_MAX_ACCOUNTS`, default `1`) is validated into the range `1..10` — one account per `discord-ipc-{0..9}` pipe; `0` means "unset" and becomes the default `1`. Values above the slot count are rejected at startup rather than silently clamped, so a typo cannot halve the number of accounts.
 
 ```yaml
 discord:
@@ -293,6 +302,7 @@ discord:
   health_check_interval: 30s # IPC PING interval
   health_check_timeout: 10s  # IPC PING response timeout
   coalesce_interval: 5s      # Buffer window for batching presence updates
+  max_accounts: 1            # Discord IPC accounts to track, one per discord-ipc-{0..9} pipe
 
 server:
   host: "0.0.0.0"
@@ -330,6 +340,7 @@ logging:
 - **Tech**: Vanilla HTML/CSS/JS (no build step, no framework)
 - **Features**:
   - Connection status indicator (● green/red) driven by the proxy's `state` frames, not by the WebSocket opening
+  - **One panel per account** when `GET /api/accounts` reports more than one (task 11.2): the first account reuses the single card, later accounts get a clone, each panel shows its own account name, state badge and presence. With one account the layout and rendering are unchanged
   - **Activity source notice** — shows "No activity source" when the snapshot reports `source: "none"`, instead of an empty activity card
   - Presence fields: Details, State, Timestamps (live countdown), Assets (images), Party, Buttons
   - Real-time updates via WebSocket
@@ -375,6 +386,7 @@ discord-proxy-rpc/
 │   │   └── config.go
 │   ├── ipc/
 │   │   ├── client.go
+│   │   ├── manager.go        # One Client per Discord IPC account (task 11.2)
 │   │   ├── reconnect.go
 │   │   ├── healthcheck.go
 │   │   └── parser.go
@@ -388,7 +400,8 @@ discord-proxy-rpc/
 │   │   ├── messages.go
 │   │   └── ratelimit.go
 │   ├── state/
-│   │   └── presence.go
+│   │   ├── presence.go
+│   │   └── registry.go       # One Presence per account (task 11.2)
 │   ├── mdns/
 │   │   ├── announce.go
 │   │   └── signal.go
@@ -569,7 +582,7 @@ Out of scope: the local Discord IPC socket never leaves the host; private-key pr
 
 | Level | Scope |
 |-------|-------|
-| Unit | Parser, diff logic, config loading (including TLS validation), message codecs |
+| Unit | Parser, diff logic, config loading (including TLS validation), message codecs, per-account manager and registry isolation (task 11.2: multi-socket connect/reconnect, per-account coalesce/diff) |
 | Integration | IPC client mock (fake socket), WS hub broadcast, mDNS registration, TLS/mTLS listener and WS client-certificate path with in-test self-signed certificates |
 | E2E | Full stack: Discord IPC → proxy → WS client → dashboard render |
 
@@ -578,7 +591,7 @@ Out of scope: the local Discord IPC socket never leaves the host; private-key pr
 ## Future Extensions (Out of Scope v1)
 
 - Write support (remote `SET_ACTIVITY` with per-device auth)
-- Multiple Discord accounts (multiple IPC connections)
+- ~~Multiple Discord accounts (multiple IPC connections)~~ — implemented (task 11.2), see IPC Client, Presence State Machine, `/api/accounts` and the `account` field of the WebSocket protocol
 - ~~Prometheus metrics endpoint (`/metrics`)~~ — implemented in v1.1 (task 10.1), see Metrics section
 - TUI dashboard (`bubbletea`)
 - ~~System tray indicator (host machine)~~ — implemented in v1.1 (task 10.3), Linux StatusNotifierItem

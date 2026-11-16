@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"html"
 	"io"
 	"io/fs"
@@ -30,10 +31,19 @@ type Server struct {
 	auth               func(*http.Request) bool
 	wsPath             string
 	getCurrentPresence func() types.PresenceSnapshot
+	getAccountPresence func(account string) (types.PresenceSnapshot, bool)
+	listAccounts       func() []AccountStatus
 	getIPCState        func() string
 	rateLimiter        *RateLimiter
 	connTracker        *ConnectionTracker
 	trustedProxies     []*net.IPNet
+}
+
+// AccountStatus is one entry of GET /api/accounts and of the additive
+// "accounts" field on GET /api/state.
+type AccountStatus struct {
+	Account string `json:"account"`
+	State   string `json:"state"`
 }
 
 type ServerOption func(*Server)
@@ -41,6 +51,23 @@ type ServerOption func(*Server)
 func WithGetCurrentPresence(fn func() types.PresenceSnapshot) ServerOption {
 	return func(s *Server) {
 		s.getCurrentPresence = fn
+	}
+}
+
+// WithGetAccountPresence exposes per-account presence snapshots to
+// /api/presence?account=<slot>. A false second return answers 404.
+func WithGetAccountPresence(fn func(account string) (types.PresenceSnapshot, bool)) ServerOption {
+	return func(s *Server) {
+		s.getAccountPresence = fn
+	}
+}
+
+// WithListAccounts exposes the tracked account identities and their IPC states
+// to /api/accounts and as the additive "accounts" field of /api/state. The
+// slice must already be ordered (primary account first).
+func WithListAccounts(fn func() []AccountStatus) ServerOption {
+	return func(s *Server) {
+		s.listAccounts = fn
 	}
 }
 
@@ -121,6 +148,9 @@ func NewServer(hub *Hub, logger *zap.Logger, opts ...ServerOption) *Server {
 
 	s.hub.GetCurrentPresence = s.getCurrentPresence
 	s.hub.GetCurrentState = func() ConnectionState { return connectionStateFromIPC(s.getIPCState()) }
+	if s.getAccountPresence != nil {
+		s.hub.GetCurrentPresenceForAccount = s.getAccountPresence
+	}
 
 	s.registerRoutes()
 	return s
@@ -131,6 +161,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.wsPath, s.rateLimit(s.wsHandler.ServeHTTP, true))
 	s.mux.HandleFunc("/api/presence", s.rateLimit(s.requireAuth(s.handlePresence, true), true))
 	s.mux.HandleFunc("/api/state", s.rateLimit(s.requireAuth(s.handleState, true), true))
+	s.mux.HandleFunc("/api/accounts", s.rateLimit(s.requireAuth(s.handleAccounts, true), true))
 	// Health endpoints stay open on purpose: they are consumed by container
 	// and Kubernetes probes, which cannot carry the bearer token. /metrics is
 	// exempt for Prometheus scrapes that may run without credentials. Both are
@@ -347,17 +378,70 @@ func (s *Server) serveDashboardIndex(w http.ResponseWriter) {
 }
 
 func (s *Server) handlePresence(w http.ResponseWriter, r *http.Request) {
-	snapshot := s.getCurrentPresence()
+	account := strings.TrimSpace(r.URL.Query().Get("account"))
+
+	var snapshot types.PresenceSnapshot
+	if account == "" {
+		snapshot = s.getCurrentPresence()
+	} else {
+		selected, ok := s.accountSnapshot(account)
+		if !ok {
+			writeAPIError(w, s.logger, http.StatusNotFound, ErrCodeAccountNotFound,
+				fmt.Sprintf("unknown account: %q", account))
+			return
+		}
+		snapshot = selected
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(snapshot); err != nil {
 		s.logger.Error("failed to encode presence response", zap.Error(err))
 	}
 }
 
-func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
-	state := s.getIPCState()
+// accountSnapshot resolves an explicit account selection. Without a provider
+// every account is unknown, so a caller can never receive the primary
+// account's presence under another account's name.
+func (s *Server) accountSnapshot(account string) (types.PresenceSnapshot, bool) {
+	if s.getAccountPresence == nil {
+		return types.PresenceSnapshot{}, false
+	}
+	return s.getAccountPresence(account)
+}
+
+func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
+	accounts := s.accounts()
+	if accounts == nil {
+		accounts = []AccountStatus{}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(map[string]string{"status": state}); err != nil {
+	if err := json.NewEncoder(w).Encode(struct {
+		Accounts []AccountStatus `json:"accounts"`
+	}{Accounts: accounts}); err != nil {
+		s.logger.Error("failed to encode accounts response", zap.Error(err))
+	}
+}
+
+// accounts returns the tracked accounts, or nil when no provider is wired.
+func (s *Server) accounts() []AccountStatus {
+	if s.listAccounts == nil {
+		return nil
+	}
+	return s.listAccounts()
+}
+
+func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
+	body := map[string]any{"status": s.getIPCState()}
+	// The accounts list is additive and only worth carrying once there is more
+	// than one, so a single-account deployment keeps answering exactly the
+	// pre-multi-account body: {"status":"..."}.
+	if accounts := s.accounts(); len(accounts) > 1 {
+		body["accounts"] = accounts
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(body); err != nil {
 		s.logger.Error("failed to encode state response", zap.Error(err))
 	}
 }

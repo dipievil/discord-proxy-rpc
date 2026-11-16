@@ -6,6 +6,7 @@ discord:
   health_check_interval: 30s
   health_check_timeout: 10s
   coalesce_interval: 5s      # Buffer window for batching presence updates
+  max_accounts: 1            # Discord IPC accounts to track, one per discord-ipc-{0..9} pipe (1 = single account)
 
 server:
   host: "0.0.0.0"

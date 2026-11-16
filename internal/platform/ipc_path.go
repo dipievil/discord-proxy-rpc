@@ -6,7 +6,9 @@ import (
 	"runtime"
 )
 
-const ipcNameCount = 10
+// SlotCount is the number of discord-ipc-{0..9} sockets the platform resolver
+// exposes. It is also the upper bound for discord.max_accounts.
+const SlotCount = 10
 
 func IPCPaths() []string {
 	switch runtime.GOOS {
@@ -23,16 +25,16 @@ func unixPaths() []string {
 		base = "/tmp"
 	}
 
-	paths := make([]string, ipcNameCount)
-	for i := 0; i < ipcNameCount; i++ {
+	paths := make([]string, SlotCount)
+	for i := 0; i < SlotCount; i++ {
 		paths[i] = fmt.Sprintf("%s/discord-ipc-%d", base, i)
 	}
 	return paths
 }
 
 func windowsPaths() []string {
-	paths := make([]string, ipcNameCount)
-	for i := 0; i < ipcNameCount; i++ {
+	paths := make([]string, SlotCount)
+	for i := 0; i < SlotCount; i++ {
 		paths[i] = fmt.Sprintf(`\\.\pipe\discord-ipc-%d`, i)
 	}
 	return paths

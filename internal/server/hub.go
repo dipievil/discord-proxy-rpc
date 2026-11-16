@@ -55,6 +55,13 @@ type Hub struct {
 	doneOnce           sync.Once
 	ClientID           string
 	GetCurrentPresence func() types.PresenceSnapshot
+	// GetCurrentPresenceForAccount supplies get_current answers for an
+	// explicitly selected account; nil means account selection is unsupported.
+	GetCurrentPresenceForAccount func(account string) (types.PresenceSnapshot, bool)
+	// PrimaryAccount is the account get_current and the state subscription
+	// snapshot describe when no account is selected. It stays empty with a
+	// single account, so those frames carry no account field.
+	PrimaryAccount string
 	// GetCurrentState supplies the snapshot a state subscription is answered
 	// with; nil disables the snapshot.
 	GetCurrentState func() ConnectionState
@@ -122,7 +129,9 @@ func (h *Hub) Run(ctx context.Context) {
 		case req := <-h.stateSnapshots:
 			h.mu.Lock()
 			if _, ok := h.clients[req.client.id]; ok && h.GetCurrentState != nil {
-				data, err := json.Marshal(NewStateMessage(h.GetCurrentState(), h.ClientID))
+				msg := NewStateMessage(h.GetCurrentState(), h.ClientID)
+				msg.Account = h.PrimaryAccount
+				data, err := json.Marshal(msg)
 				if err != nil {
 					h.logger.Error("failed to marshal state snapshot", zap.Error(fmt.Errorf("marshal state snapshot: %w", err)))
 				} else {
@@ -278,20 +287,7 @@ func (c *Client) ReadPump() {
 				c.hub.SendStateSnapshot(c)
 			}
 		case MsgTypeGetCurrent:
-			if c.hub.GetCurrentPresence != nil {
-				snapshot := c.hub.GetCurrentPresence()
-				resp, err := NewCurrentMessage(snapshot, c.hub.ClientID)
-				if err != nil {
-					c.hub.logger.Error("failed to create current message", zap.Error(err))
-					continue
-				}
-				respData, err := json.Marshal(resp)
-				if err != nil {
-					c.hub.logger.Error("failed to marshal current message", zap.Error(err))
-					continue
-				}
-				c.SendMessage(respData)
-			}
+			c.hub.sendCurrent(c, msg.Account)
 		default:
 			c.hub.logger.Warn("unknown message type", zap.String("type", msg.Type), zap.String("client", c.id))
 			errMsg, err := NewErrorMessage(ErrCodeInvalidMessage, fmt.Sprintf("unknown message type: %q", msg.Type))
@@ -334,6 +330,62 @@ func (c *Client) WritePump() {
 			}
 		}
 	}
+}
+
+// sendCurrent answers get_current, optionally scoped to one account. An
+// unknown account is reported as an invalid request instead of falling back to
+// the primary account, so a client never renders one account's presence under
+// another account's identity.
+func (h *Hub) sendCurrent(c *Client, account string) {
+	if account != "" {
+		if h.GetCurrentPresenceForAccount == nil {
+			h.sendError(c, ErrCodeInvalidMessage, fmt.Sprintf("unknown account: %q", account))
+			return
+		}
+		snapshot, ok := h.GetCurrentPresenceForAccount(account)
+		if !ok {
+			h.sendError(c, ErrCodeInvalidMessage, fmt.Sprintf("unknown account: %q", account))
+			return
+		}
+		h.sendCurrentMessage(c, snapshot, account)
+		return
+	}
+
+	if h.GetCurrentPresence == nil {
+		return
+	}
+	h.sendCurrentMessage(c, h.GetCurrentPresence(), h.PrimaryAccount)
+}
+
+func (h *Hub) sendCurrentMessage(c *Client, snapshot types.PresenceSnapshot, account string) {
+	msg, err := NewCurrentMessage(snapshot, h.ClientID)
+	if err != nil {
+		h.logger.Error("failed to create current message", zap.Error(err))
+		return
+	}
+	msg.Account = account
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		h.logger.Error("failed to marshal current message", zap.Error(err))
+		return
+	}
+	c.SendMessage(data)
+}
+
+func (h *Hub) sendError(c *Client, code ErrorCode, message string) {
+	msg, err := NewErrorMessage(code, message)
+	if err != nil {
+		h.logger.Error("failed to create error message", zap.Error(err))
+		return
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		h.logger.Error("failed to marshal error message", zap.Error(err))
+		return
+	}
+	c.SendMessage(data)
 }
 
 func (c *Client) SendMessage(data []byte) {

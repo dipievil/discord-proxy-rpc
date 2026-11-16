@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
+	"github.com/discord-proxy-rpc/discord-proxy-rpc/internal/platform"
 	"github.com/discord-proxy-rpc/discord-proxy-rpc/internal/testcert"
 )
 
@@ -37,6 +38,9 @@ func TestDefaults(t *testing.T) {
 	}
 	if cfg.Discord.CoalesceInterval != 5*time.Second {
 		t.Errorf("discord.coalesce_interval = %v, want 5s", cfg.Discord.CoalesceInterval)
+	}
+	if cfg.Discord.MaxAccounts != 1 {
+		t.Errorf("discord.max_accounts = %d, want 1 (single-account default)", cfg.Discord.MaxAccounts)
 	}
 
 	if cfg.Server.Host != "0.0.0.0" {
@@ -103,6 +107,7 @@ discord:
   client_id: "123456789"
   auto_reconnect: false
   coalesce_interval: 10s
+  max_accounts: 3
 server:
   port: 9999
 auth:
@@ -140,6 +145,9 @@ auth:
 	if cfg.Discord.CoalesceInterval != 10*time.Second {
 		t.Errorf("discord.coalesce_interval = %v, want 10s", cfg.Discord.CoalesceInterval)
 	}
+	if cfg.Discord.MaxAccounts != 3 {
+		t.Errorf("discord.max_accounts = %d, want 3", cfg.Discord.MaxAccounts)
+	}
 }
 
 func TestDefaultRateLimitCoversDashboardReload(t *testing.T) {
@@ -163,6 +171,7 @@ func TestEnvVarOverrides(t *testing.T) {
 		"PROXY_MDNS_ENABLED":              "false",
 		"PROXY_SERVER_READ_TIMEOUT":       "30s",
 		"PROXY_DISCORD_COALESCE_INTERVAL": "10s",
+		"PROXY_DISCORD_MAX_ACCOUNTS":      "4",
 		"PROXY_SERVER_MAX_WS_CONNECTIONS": "50",
 		"PROXY_SERVER_RATE_LIMIT_PER_IP":  "20",
 		"PROXY_SERVER_RATE_LIMIT_WINDOW":  "30s",
@@ -204,6 +213,9 @@ func TestEnvVarOverrides(t *testing.T) {
 	}
 	if cfg.Discord.CoalesceInterval != 10*time.Second {
 		t.Errorf("discord.coalesce_interval = %v, want 10s", cfg.Discord.CoalesceInterval)
+	}
+	if cfg.Discord.MaxAccounts != 4 {
+		t.Errorf("discord.max_accounts = %d, want 4 (from PROXY_DISCORD_MAX_ACCOUNTS)", cfg.Discord.MaxAccounts)
 	}
 	if cfg.Server.MaxWSConnections != 50 {
 		t.Errorf("server.max_ws_connections = %d, want 50", cfg.Server.MaxWSConnections)
@@ -322,6 +334,46 @@ func TestValidateValidConfig(t *testing.T) {
 	}
 	if cfg.Discord.ClientID != "123456789012345678" {
 		t.Errorf("client_id not trimmed/preserved correctly: %q", cfg.Discord.ClientID)
+	}
+}
+
+func TestValidateMaxAccounts(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   int
+		want    int
+		wantErr bool
+	}{
+		{name: "zero means the default", value: 0, want: 1},
+		{name: "one account", value: 1, want: 1},
+		{name: "all sockets", value: platform.SlotCount, want: platform.SlotCount},
+		{name: "above the socket count", value: platform.SlotCount + 1, wantErr: true},
+		{name: "negative", value: -1, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{}
+			cfg.Discord.ClientID = "123456789012345678"
+			cfg.Discord.MaxAccounts = tt.value
+
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Validate() with max_accounts %d: expected an error", tt.value)
+				}
+				if !strings.Contains(err.Error(), "discord.max_accounts") {
+					t.Errorf("error %q does not name the field discord.max_accounts", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate() with max_accounts %d: %v", tt.value, err)
+			}
+			if cfg.Discord.MaxAccounts != tt.want {
+				t.Errorf("max_accounts = %d, want %d", cfg.Discord.MaxAccounts, tt.want)
+			}
+		})
 	}
 }
 

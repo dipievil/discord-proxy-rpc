@@ -2,6 +2,7 @@ package web
 
 import (
 	"io/fs"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -558,5 +559,98 @@ func TestDashboardStatusFollowsProxyState(t *testing.T) {
 	send(`{"type":"state","status":"disconnected"}`)
 	if got := env.statusText.Get("textContent").String(); got != "Disconnected" {
 		t.Errorf("status = %q after disconnected state frame, want %q", got, "Disconnected")
+	}
+}
+
+// The dashboard learns the panel plan from GET /api/accounts. A response with
+// zero or one account must keep the single-panel dashboard unchanged.
+func TestDashboardAccountsView(t *testing.T) {
+	vm := runDashboardJS(t)
+	fn := dashboardFn(t, vm, "accountsView")
+
+	tests := []struct {
+		name      string
+		payload   interface{}
+		wantMulti bool
+		wantNames []string
+		wantState []string
+	}{
+		{
+			name:    "missing response is single-account",
+			payload: nil,
+		},
+		{
+			name:    "empty list is single-account",
+			payload: map[string]interface{}{"accounts": []interface{}{}},
+		},
+		{
+			name: "one account stays single",
+			payload: map[string]interface{}{"accounts": []interface{}{
+				map[string]interface{}{"account": "discord-ipc-0", "state": "connected"},
+			}},
+			wantNames: []string{"discord-ipc-0"},
+			wantState: []string{"connected"},
+		},
+		{
+			name: "two accounts switch to multi",
+			payload: map[string]interface{}{"accounts": []interface{}{
+				map[string]interface{}{"account": "discord-ipc-0", "state": "connected"},
+				map[string]interface{}{"account": "discord-ipc-1", "state": "disconnected"},
+			}},
+			wantMulti: true,
+			wantNames: []string{"discord-ipc-0", "discord-ipc-1"},
+			wantState: []string{"connected", "disconnected"},
+		},
+		{
+			name: "malformed and duplicate entries are dropped",
+			payload: map[string]interface{}{"accounts": []interface{}{
+				map[string]interface{}{"account": "discord-ipc-0", "state": "connected"},
+				map[string]interface{}{"account": "discord-ipc-0", "state": "connected"},
+				map[string]interface{}{"state": "connected"},
+				map[string]interface{}{"account": ""},
+				"not-an-object",
+			}},
+			wantNames: []string{"discord-ipc-0"},
+			wantState: []string{"connected"},
+		},
+		{
+			name: "missing state is empty",
+			payload: map[string]interface{}{"accounts": []interface{}{
+				map[string]interface{}{"account": "discord-ipc-0"},
+				map[string]interface{}{"account": "discord-ipc-1"},
+			}},
+			wantMulti: true,
+			wantNames: []string{"discord-ipc-0", "discord-ipc-1"},
+			wantState: []string{"", ""},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := fn(goja.Undefined(), vm.ToValue(tt.payload))
+			if err != nil {
+				t.Fatalf("accountsView call: %v", err)
+			}
+
+			obj := got.ToObject(vm)
+			if multi := obj.Get("multi").ToBoolean(); multi != tt.wantMulti {
+				t.Errorf("multi = %v, want %v", multi, tt.wantMulti)
+			}
+
+			accounts := obj.Get("accounts").ToObject(vm)
+			length := int(accounts.Get("length").ToInteger())
+			if length != len(tt.wantNames) {
+				t.Fatalf("accounts length = %d, want %d", length, len(tt.wantNames))
+			}
+			for i, wantName := range tt.wantNames {
+				entry := accounts.Get(strconv.Itoa(i)).ToObject(vm)
+				if name := entry.Get("account").String(); name != wantName {
+					t.Errorf("accounts[%d].account = %q, want %q", i, name, wantName)
+				}
+				if state := entry.Get("state").String(); state != tt.wantState[i] {
+					t.Errorf("accounts[%d].state = %q, want %q", i, state, tt.wantState[i])
+				}
+			}
+		})
 	}
 }

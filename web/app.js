@@ -24,11 +24,16 @@
     let ws = null;
     let reconnectDelay = WS_RECONNECT_BASE;
     let reconnectTimer = null;
-    let timestampTimer = null;
     let currentActivity = null;
     let clientId = null;
     let toastTimer = null;
     let authToken = null;
+    let singlePanel = null;
+    let basePanelRoot = null;
+    let panels = {};
+    let primaryAccount = null;
+    let multiAccount = false;
+    let accountEntries = [];
 
     function getWsPath() {
         try {
@@ -154,15 +159,7 @@
         ws.onopen = function () {
             console.log('[Dashboard] Connected to proxy');
             reconnectDelay = WS_RECONNECT_BASE;
-
-            // The status indicator follows the proxy's IPC link, not the
-            // WebSocket: an open socket does not mean Discord is reachable.
-            // The state snapshot that answers this subscription sets it.
-            ws.send(JSON.stringify({
-                type: 'subscribe',
-                events: ['presence', 'state']
-            }));
-            ws.send(JSON.stringify({ type: 'get_current' }));
+            startSession();
         };
 
         ws.onmessage = function (event) {
@@ -193,6 +190,74 @@
         }, reconnectDelay);
     }
 
+    // startSession learns which accounts the proxy tracks before subscribing,
+    // so a multi-account proxy gets one panel and one get_current per account.
+    // A single-account proxy, or an older server without /api/accounts, sees
+    // exactly the frames it always did: no account field anywhere.
+    function startSession() {
+        loadAccounts(function (view) {
+            applyAccounts(view);
+
+            // The status indicator follows the proxy's IPC link, not the
+            // WebSocket: an open socket does not mean Discord is reachable.
+            // The state snapshot that answers this subscription sets it.
+            ws.send(JSON.stringify({
+                type: 'subscribe',
+                events: ['presence', 'state']
+            }));
+
+            if (multiAccount) {
+                view.accounts.forEach(function (entry) {
+                    ws.send(JSON.stringify({ type: 'get_current', account: entry.account }));
+                });
+                return;
+            }
+            ws.send(JSON.stringify({ type: 'get_current' }));
+        });
+    }
+
+    function loadAccounts(done) {
+        if (typeof fetch !== 'function') {
+            done(accountsView(null));
+            return;
+        }
+
+        fetch('/api/accounts', {
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        }).then(function (resp) {
+            if (!resp.ok) throw new Error('GET /api/accounts: ' + resp.status);
+            return resp.json();
+        }).then(function (payload) {
+            done(accountsView(payload));
+        }).catch(function (err) {
+            console.warn('[Dashboard] Could not load accounts, assuming a single account:', err);
+            done(accountsView(null));
+        });
+    }
+
+    // accountsView normalizes GET /api/accounts into the panel plan: the
+    // ordered account list and whether more than one account is tracked. An
+    // empty or malformed response means a single-account proxy.
+    function accountsView(payload) {
+        const raw = payload && Array.isArray(payload.accounts) ? payload.accounts : [];
+        const accounts = [];
+
+        raw.forEach(function (entry) {
+            if (!entry || typeof entry.account !== 'string' || entry.account === '') return;
+            if (accounts.some(function (known) { return known.account === entry.account; })) return;
+            accounts.push({
+                account: entry.account,
+                state: typeof entry.state === 'string' ? entry.state : ''
+            });
+        });
+
+        return {
+            multi: accounts.length > 1,
+            accounts: accounts
+        };
+    }
+
     function handleMessage(msg) {
         switch (msg.type) {
             case 'presence':
@@ -200,21 +265,185 @@
                 if (msg.client_id) {
                     clientId = msg.client_id;
                 }
+                noteAccount(msg.account);
+                const panel = panelFor(msg.account);
+                if (!panel) break;
+                panel.activity = msg.payload;
                 currentActivity = msg.payload;
                 const view = presenceView(msg.payload);
-                updateSourceNotice(view.source, view.hasActivity);
-                renderPresence(view.activity);
+                updateSourceNotice(panel, view.source, view.hasActivity);
+                renderPresence(panel, view.activity);
                 break;
             }
             case 'state':
-                updateConnectionStatus(msg.status);
                 if (msg.client_id) {
                     clientId = msg.client_id;
                 }
+                if (msg.account) {
+                    noteAccount(msg.account);
+                    updateAccountStatus(msg.account, msg.status);
+                    // The header follows the primary account; every panel keeps
+                    // its own indicator for the rest.
+                    if (multiAccount && msg.account !== primaryAccount) break;
+                }
+                updateConnectionStatus(msg.status);
                 break;
             default:
                 console.warn('[Dashboard] Unknown message type:', msg.type);
         }
+    }
+
+    // noteAccount adds a panel for an account a frame names but /api/accounts
+    // did not report, so a failed account listing can never make two accounts
+    // share one panel.
+    function noteAccount(account) {
+        if (typeof account !== 'string' || account === '') return;
+        if (accountEntries.some(function (entry) { return entry.account === account; })) return;
+
+        accountEntries = accountEntries.concat([{ account: account, state: '' }]);
+        applyAccounts({ multi: accountEntries.length > 1, accounts: accountEntries });
+    }
+
+    function makePanel(root) {
+        return { root: root, timer: null, activity: null, state: null };
+    }
+
+    function basePanel() {
+        if (!basePanelRoot) {
+            basePanelRoot = document.getElementById('presence-card');
+        }
+        if (basePanelRoot && !singlePanel) {
+            singlePanel = makePanel(basePanelRoot);
+        }
+        return singlePanel;
+    }
+
+    // panelFor routes a frame to the panel of the account it names. A frame
+    // without an account belongs to the single/primary panel.
+    function panelFor(account) {
+        if (account && panels[account]) return panels[account];
+        return singlePanel || basePanel();
+    }
+
+    // applyAccounts renders one panel per account when the proxy tracks more
+    // than one, and keeps the single panel otherwise. It is idempotent, so a
+    // reconnect reuses existing panels and only adds or removes what changed.
+    function applyAccounts(view) {
+        const entries = view && Array.isArray(view.accounts) ? view.accounts : [];
+        const base = basePanel();
+        const container = document.getElementById('accounts');
+
+        accountEntries = entries.slice();
+        multiAccount = Boolean(view && view.multi) && entries.length > 1;
+        primaryAccount = entries.length ? entries[0].account : null;
+
+        if (!multiAccount) {
+            Object.keys(panels).forEach(function (name) {
+                if (panels[name] && panels[name] !== singlePanel) removePanel(panels[name]);
+            });
+            panels = {};
+            if (base) setAccountMeta(base, null, null);
+            if (container) container.classList.remove('multi');
+            return;
+        }
+
+        if (container) container.classList.add('multi');
+
+        const seen = {};
+        entries.forEach(function (entry, index) {
+            let panel = panels[entry.account];
+            if (!panel) {
+                const root = index === 0 && base ? base.root : clonePanelRoot();
+                panel = makePanel(root);
+                if (root) root.setAttribute('data-account', entry.account);
+            }
+            panels[entry.account] = panel;
+            seen[entry.account] = true;
+            if (container && panel.root) container.appendChild(panel.root);
+            setAccountMeta(panel, entry.account, entry.state);
+        });
+
+        Object.keys(panels).forEach(function (name) {
+            if (seen[name]) return;
+            removePanel(panels[name]);
+            delete panels[name];
+        });
+    }
+
+    function clonePanelRoot() {
+        if (!basePanelRoot || typeof basePanelRoot.cloneNode !== 'function') return null;
+
+        const clone = basePanelRoot.cloneNode(true);
+        clone.removeAttribute('id');
+        clone.removeAttribute('data-account');
+
+        const identified = typeof clone.querySelectorAll === 'function' ? clone.querySelectorAll('[id]') : [];
+        Array.prototype.forEach.call(identified, function (el) {
+            el.removeAttribute('id');
+        });
+        resetPanel(clone);
+        return clone;
+    }
+
+    function resetPanel(root) {
+        if (!root || typeof root.querySelectorAll !== 'function') return;
+
+        Array.prototype.forEach.call(root.querySelectorAll('[data-field]'), function (el) {
+            const name = el.getAttribute('data-field');
+            if (name === 'account' || name === 'account_state') return;
+            el.textContent = '\u2014';
+        });
+        Array.prototype.forEach.call(root.querySelectorAll('[data-asset]'), function (img) {
+            img.hidden = true;
+            img.removeAttribute('src');
+            const placeholder = img.nextElementSibling;
+            if (placeholder && placeholder.classList && placeholder.classList.contains('asset-placeholder')) {
+                placeholder.hidden = false;
+            }
+        });
+        renderButtons(makePanel(root), null);
+    }
+
+    function removePanel(panel) {
+        if (!panel) return;
+        stopTimestampTimer(panel);
+        if (panel.root && panel.root !== basePanelRoot && panel.root.parentNode) {
+            panel.root.parentNode.removeChild(panel.root);
+        }
+    }
+
+    function setAccountMeta(panel, account, state) {
+        if (!panel || !panel.root || typeof panel.root.querySelector !== 'function') return;
+
+        const meta = panel.root.querySelector('[data-account-meta]');
+        if (!meta) return;
+        if (!account) {
+            meta.hidden = true;
+            return;
+        }
+        meta.hidden = false;
+        setField(panel, 'account', account);
+        if (state) updateAccountState(panel, state);
+    }
+
+    function updateAccountState(panel, state) {
+        if (!panel || !panel.root || typeof panel.root.querySelector !== 'function') return;
+
+        panel.state = state;
+        const el = panel.root.querySelector('[data-field="account_state"]');
+        if (!el) return;
+        el.textContent = capitalize(state);
+        el.className = 'account-state ' + state;
+    }
+
+    function updateAccountStatus(account, status) {
+        const panel = panels[account];
+        if (!panel) return;
+        updateAccountState(panel, status);
+    }
+
+    function capitalize(value) {
+        return value.charAt(0).toUpperCase() + value.slice(1);
     }
 
     // presenceView normalizes a presence/current payload into the fields the
@@ -232,8 +461,8 @@
         };
     }
 
-    function updateSourceNotice(source, hasActivity) {
-        const notice = document.getElementById('source-notice');
+    function updateSourceNotice(panel, source, hasActivity) {
+        const notice = panel && panel.root ? panel.root.querySelector('[data-notice]') : null;
         if (!notice) return;
 
         if (hasActivity) {
@@ -247,50 +476,52 @@
             : 'No activity reported by the source right now.';
     }
 
-    function renderPresence(activity) {
-        if (!activity) return;
+    function renderPresence(panel, activity) {
+        if (!panel || !activity) return;
 
-        setText('type', activityTypeLabel(activity.type));
-        setText('details', activity.details || '\u2014');
-        setText('state', activity.state || '\u2014');
+        setField(panel, 'type', activityTypeLabel(activity.type));
+        setField(panel, 'details', activity.details || '\u2014');
+        setField(panel, 'state', activity.state || '\u2014');
 
         if (activity.timestamps) {
-            startTimestampTimer(activity.timestamps);
+            startTimestampTimer(panel, activity.timestamps);
         } else {
-            stopTimestampTimer();
-            setText('elapsed', '\u2014');
-            setText('remaining', '\u2014');
+            stopTimestampTimer(panel);
+            setField(panel, 'elapsed', '\u2014');
+            setField(panel, 'remaining', '\u2014');
         }
 
         if (activity.assets) {
-            renderImage('large-image', activity.assets.large_image);
-            renderImage('small-image', activity.assets.small_image);
-            setText('large_text', activity.assets.large_text || '\u2014');
-            setText('small_text', activity.assets.small_text || '\u2014');
+            renderImage(panel, 'large', activity.assets.large_image);
+            renderImage(panel, 'small', activity.assets.small_image);
+            setField(panel, 'large_text', activity.assets.large_text || '\u2014');
+            setField(panel, 'small_text', activity.assets.small_text || '\u2014');
         } else {
-            renderImage('large-image', null);
-            renderImage('small-image', null);
-            setText('large_text', '\u2014');
-            setText('small_text', '\u2014');
+            renderImage(panel, 'large', null);
+            renderImage(panel, 'small', null);
+            setField(panel, 'large_text', '\u2014');
+            setField(panel, 'small_text', '\u2014');
         }
 
         if (activity.party) {
-            setText('party_id', activity.party.id || '\u2014');
+            setField(panel, 'party_id', activity.party.id || '\u2014');
             if (activity.party.size && activity.party.size.length >= 2) {
-                setText('party_size', activity.party.size[0] + '/' + activity.party.size[1]);
+                setField(panel, 'party_size', activity.party.size[0] + '/' + activity.party.size[1]);
             } else {
-                setText('party_size', '\u2014');
+                setField(panel, 'party_size', '\u2014');
             }
         } else {
-            setText('party_id', '\u2014');
-            setText('party_size', '\u2014');
+            setField(panel, 'party_id', '\u2014');
+            setField(panel, 'party_size', '\u2014');
         }
 
-        renderButtons(activity.buttons);
+        renderButtons(panel, activity.buttons);
     }
 
-    function renderImage(elementId, imageId) {
-        const img = document.getElementById(elementId);
+    function renderImage(panel, role, imageId) {
+        if (!panel || !panel.root || typeof panel.root.querySelector !== 'function') return;
+
+        const img = panel.root.querySelector('[data-asset="' + role + '"]');
         if (!img) return;
 
         const placeholder = img.nextElementSibling;
@@ -356,18 +587,19 @@
         }
     }
 
-    function startTimestampTimer(timestamps) {
-        stopTimestampTimer();
-        updateTimestamps(timestamps);
-        timestampTimer = setInterval(function () {
-            updateTimestamps(timestamps);
+    function startTimestampTimer(panel, timestamps) {
+        stopTimestampTimer(panel);
+        updateTimestamps(panel, timestamps);
+        if (!panel) return;
+        panel.timer = setInterval(function () {
+            updateTimestamps(panel, timestamps);
         }, TIMESTAMP_INTERVAL);
     }
 
-    function stopTimestampTimer() {
-        if (timestampTimer) {
-            clearInterval(timestampTimer);
-            timestampTimer = null;
+    function stopTimestampTimer(panel) {
+        if (panel && panel.timer) {
+            clearInterval(panel.timer);
+            panel.timer = null;
         }
     }
 
@@ -393,15 +625,15 @@
         return result;
     }
 
-    function updateTimestamps(timestamps) {
+    function updateTimestamps(panel, timestamps) {
         const computed = computeTimestamps(timestamps, Date.now());
 
-        setText('elapsed', computed.elapsed === null ? '\u2014' : formatDuration(computed.elapsed));
+        setField(panel, 'elapsed', computed.elapsed === null ? '\u2014' : formatDuration(computed.elapsed));
 
         if (computed.ended) {
-            setText('remaining', 'Ended');
+            setField(panel, 'remaining', 'Ended');
         } else {
-            setText('remaining', computed.remaining === null ? '\u2014' : formatDuration(computed.remaining));
+            setField(panel, 'remaining', computed.remaining === null ? '\u2014' : formatDuration(computed.remaining));
         }
     }
 
@@ -415,8 +647,8 @@
         return s + 's';
     }
 
-    function renderButtons(buttons) {
-        const list = document.getElementById('buttons-list');
+    function renderButtons(panel, buttons) {
+        const list = panel && panel.root ? panel.root.querySelector('[data-buttons]') : null;
         if (!list) return;
 
         list.textContent = '';
@@ -452,8 +684,9 @@
         }
     }
 
-    function setText(fieldId, text) {
-        const el = document.querySelector('[data-field="' + fieldId + '"]');
+    function setField(panel, fieldId, text) {
+        if (!panel || !panel.root || typeof panel.root.querySelector !== 'function') return;
+        const el = panel.root.querySelector('[data-field="' + fieldId + '"]');
         if (el) el.textContent = text;
     }
 
@@ -463,7 +696,7 @@
         if (!el || !text) return;
 
         el.className = 'status ' + status;
-        text.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+        text.textContent = capitalize(status);
     }
 
     function activityTypeLabel(type) {
@@ -540,6 +773,7 @@
 
     function init() {
         authToken = resolveToken();
+        basePanel();
         setupCopyJson();
         setupKeyboardShortcut();
         connect();
@@ -563,7 +797,9 @@
             base64UrlEncode: base64UrlEncode,
             getWsPath: getWsPath,
             resolveToken: resolveToken,
-            presenceView: presenceView
+            presenceView: presenceView,
+            accountsView: accountsView,
+            capitalize: capitalize
         };
     }
 })();
