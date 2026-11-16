@@ -8,6 +8,8 @@ A lightweight, read-only LAN proxy that connects to Discord's local IPC socket a
 
 ## Quick start
 
+The proxy must run on the same machine and under the same OS user session as the Discord desktop client, because it talks to Discord's local IPC socket -- see [runtime requirements](docs/advanced/ARCHITECTURE.md#runtime-requirements).
+
 Download the latest release for your platform from [Releases](https://github.com/dipievil/discord-proxy-rpc/releases/latest). Each proxy archive contains `discord-proxy`, `discover`, `config.example.yaml`, `LICENSE` and `README.md`.
 
 | Platform | Architecture | Asset |
